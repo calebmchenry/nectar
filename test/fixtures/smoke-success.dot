@@ -1,0 +1,12 @@
+digraph SmokeSuccess {
+  start [shape=Mdiamond, label="Start"]
+  hello [
+    shape=parallelogram,
+    label="Hello",
+    script="node scripts/compliance_loop.mjs draft --provider smoke"
+  ]
+  done [shape=Msquare, label="Done"]
+
+  start -> hello
+  hello -> done
+}

@@ -1,0 +1,15 @@
+digraph RetryOnce {
+  start [shape=Mdiamond, label="Start"]
+  implement [
+    shape=parallelogram,
+    label="Implement",
+    script="node scripts/compliance_loop.mjs implement",
+    max_retries=1
+  ]
+  done [shape=Msquare, label="Done"]
+
+  start -> implement
+  implement -> done [condition="outcome=success"]
+  implement -> done [condition="outcome=fail"]
+  implement -> done [label="Fallback"]
+}

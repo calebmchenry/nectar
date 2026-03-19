@@ -1,0 +1,15 @@
+digraph ConditionalBranch {
+  start [shape=Mdiamond, label="Start"]
+  branch [
+    shape=parallelogram,
+    label="Branch",
+    script="node scripts/compliance_loop.mjs audit"
+  ]
+  success_exit [shape=Msquare, label="Success"]
+  fail_exit [shape=Msquare, label="Fail"]
+
+  start -> branch
+  branch -> success_exit [condition="outcome=success"]
+  branch -> fail_exit [condition="outcome=fail"]
+  branch -> fail_exit [label="Fallback"]
+}

@@ -10,68 +10,68 @@ digraph ComplianceLoop {
     compliance_check [
         shape=parallelogram,
         label="Compliance Audit",
-        script="python3 scripts/compliance_loop.py audit"
+        script="node scripts/compliance_loop.mjs audit"
     ]
 
     claude_draft [
         shape=parallelogram,
         label="Claude Draft",
-        script="python3 scripts/compliance_loop.py draft --provider claude"
+        script="node scripts/compliance_loop.mjs draft --provider claude"
     ]
 
     codex_draft [
         shape=parallelogram,
         label="Codex Draft",
-        script="python3 scripts/compliance_loop.py draft --provider codex"
+        script="node scripts/compliance_loop.mjs draft --provider codex"
     ]
 
     gemini_draft [
         shape=parallelogram,
         label="Gemini Draft",
-        script="python3 scripts/compliance_loop.py draft --provider gemini"
+        script="node scripts/compliance_loop.mjs draft --provider gemini"
     ]
 
     claude_critique [
         shape=parallelogram,
         label="Claude Critique",
-        script="python3 scripts/compliance_loop.py critique --provider claude"
+        script="node scripts/compliance_loop.mjs critique --provider claude"
     ]
 
     codex_critique [
         shape=parallelogram,
         label="Codex Critique",
-        script="python3 scripts/compliance_loop.py critique --provider codex"
+        script="node scripts/compliance_loop.mjs critique --provider codex"
     ]
 
     gemini_critique [
         shape=parallelogram,
         label="Gemini Critique",
-        script="python3 scripts/compliance_loop.py critique --provider gemini"
+        script="node scripts/compliance_loop.mjs critique --provider gemini"
     ]
 
     merge_sprint [
         shape=parallelogram,
         label="Merge Sprint",
-        script="python3 scripts/compliance_loop.py merge"
+        script="node scripts/compliance_loop.mjs merge"
     ]
 
     fetch_weather [
         shape=parallelogram,
         label="Fetch Weather Report",
-        script="python3 scripts/compliance_loop.py fetch-weather"
+        script="node scripts/compliance_loop.mjs fetch-weather"
     ]
 
     implement [
         shape=parallelogram,
         label="Implement Sprint",
-        script="python3 scripts/compliance_loop.py implement",
+        script="node scripts/compliance_loop.mjs implement",
         max_retries=2
     ]
 
     validate [
         shape=parallelogram,
         label="Validate Implementation",
-        script="python3 scripts/compliance_loop.py validate"
+        script="node scripts/compliance_loop.mjs validate"
     ]
 
     start -> compliance_check

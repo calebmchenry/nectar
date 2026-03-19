@@ -1,0 +1,31 @@
+{
+  "name": "nectar",
+  "version": "0.1.0",
+  "description": "Pollinator CLI for DOT-based pipelines",
+  "type": "module",
+  "bin": {
+    "pollinator": "dist/cli/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "tsx src/cli/index.ts"
+  },
+  "dependencies": {
+    "@ts-graphviz/parser": "^0.4.0",
+    "chalk": "^5.4.1",
+    "commander": "^14.0.1",
+    "execa": "^9.6.0",
+    "ora": "^8.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.4"
+  }
+}
