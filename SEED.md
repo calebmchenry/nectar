@@ -1,0 +1,9 @@
+I need a FULLY implemented version of https://github.com/strongdm/attractor. Like if it isn't 100% to spec don't bother me
+
+It should be a super slick and super fun cli to use with all the bells and whistles. Super fire 🔥 emjois and such. Nectar/pollinator and ya know any other puns that make sense. Ya know upgrading and distributing would be nice and cool too.
+
+I want a polished web ui that can be ran to create, edit, and view dot viz files. Where I just type stuff that I want and it just gets sent to claude to generate. I should see a diagram representation and also plain text version of the file as it happens in real time. The file sytem is your best friend for this and well everything. It should be well organized such that even a dummy like me can handle it. I also have this cool idea of appending to a backlog. Where I just want to be able to stream consciences add pictures, videos, what ever. And this can just be a file system organized set of data that can be scanned over by a super brainy agent to determine what needs next. Maybe there should be some kind of way to mark the status of things. Both manually and from the file system. Maybe there is even some cool ways to visualize the information. Like kanaban or something like that. Maybe I can also like async mark things as super high priority or you know whatever. If I sent an agent to read through the source files holding these documents it should be able to easily create its own stuff that it thinks needs done.
+
+Whenever I add ideas and stuff it would be cool if codex, gemini, and codex would work separately/together (kinda like the claude skill) And attach their final analysis on how to handle the idea
+
+Just remember super slick, super modern, ya know dark theme, and more puns the better. Maybe some jokes, idk whatever you want
