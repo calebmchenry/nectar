@@ -45,11 +45,8 @@ export function resolvePlatformAsset(platform = process.platform, arch = process
 }
 
 export function isCompiledBinary(runtime: RuntimeFingerprint = process): boolean {
-  const runtimeName = runtime.release?.name;
-  if (runtimeName !== 'bun') {
-    return false;
-  }
-
+  // Bun sets process.release.name to 'node' for compatibility, so we check
+  // process.versions.bun instead to detect the Bun runtime.
   const bunVersion = runtime.versions?.bun;
   if (!bunVersion) {
     return false;

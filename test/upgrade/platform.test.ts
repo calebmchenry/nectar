@@ -43,7 +43,7 @@ describe('upgrade/platform', () => {
   it('detects source execution in bun runtime', () => {
     expect(
       isCompiledBinary({
-        release: { name: 'bun' },
+        release: { name: 'node' },
         versions: { bun: '1.2.0' },
         execPath: '/usr/local/bin/bun'
       })
@@ -51,9 +51,10 @@ describe('upgrade/platform', () => {
   });
 
   it('detects compiled bun binary runtime', () => {
+    // Bun sets process.release.name to 'node' for compatibility
     expect(
       isCompiledBinary({
-        release: { name: 'bun' },
+        release: { name: 'node' },
         versions: { bun: '1.2.0' },
         execPath: '/Users/caleb/.local/bin/nectar'
       })

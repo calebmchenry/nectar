@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "tsx src/cli/index.ts",
-    "test:smoke:llm": "tsx src/llm/smoke.ts"
+    "test:smoke:llm": "tsx src/llm/smoke.ts",
+    "release": "npm version patch && git push --follow-tags"
   },
   "dependencies": {
     "@ts-graphviz/parser": "^0.4.0",
