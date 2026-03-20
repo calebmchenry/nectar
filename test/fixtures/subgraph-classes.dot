@@ -1,0 +1,24 @@
+digraph subgraph_classes {
+  start [shape=Mdiamond]
+  done [shape=Msquare]
+
+  subgraph cluster_fast {
+    label="Quick Checks"
+    node [timeout="30s"]
+    quick_lint [shape=parallelogram, script="eslint ."]
+    quick_check [shape=parallelogram, script="tsc --noEmit"]
+  }
+
+  subgraph cluster_deep {
+    node [timeout="600s"]
+    deep_review [shape=box, prompt="Deep review"]
+    deep_test [shape=parallelogram, script="npm test"]
+  }
+
+  start -> quick_lint
+  start -> quick_check
+  quick_lint -> deep_review
+  quick_check -> deep_test
+  deep_review -> done
+  deep_test -> done
+}

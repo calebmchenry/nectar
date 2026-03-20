@@ -18,11 +18,14 @@ export class ToolHandler implements NodeHandler {
 
     const timeoutMs = input.node.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const env = {
+      NECTAR_RUN_ID: input.run_id,
+      NECTAR_NODE_ID: input.node.id,
+      NECTAR_ATTEMPT: String(input.attempt),
+      NECTAR_RUN_DIR: input.run_dir,
+      NECTAR_GARDEN_PATH: input.dot_file,
+      // Legacy aliases for backward compatibility
       POLLINATOR_RUN_ID: input.run_id,
-      POLLINATOR_NODE_ID: input.node.id,
-      POLLINATOR_ATTEMPT: String(input.attempt),
       POLLINATOR_RUN_DIR: input.run_dir,
-      POLLINATOR_GARDEN_PATH: input.dot_file
     };
 
     const result = await runScript({

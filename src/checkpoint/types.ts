@@ -1,5 +1,17 @@
 import { CompletedNodeState, RunStatus } from '../engine/types.js';
 
+export interface PendingTransition {
+  source_node_id: string;
+  target_node_id: string;
+  edge: {
+    label?: string;
+    condition?: string;
+    weight: number;
+    fidelity?: string;
+    thread_id?: string;
+  };
+}
+
 export interface Cocoon {
   version: 1;
   run_id: string;
@@ -13,6 +25,10 @@ export interface Cocoon {
   current_node: string | undefined;
   context: Record<string, string>;
   retry_state: Record<string, number>;
+  pending_transition?: PendingTransition;
+  resume_requires_degraded_fidelity?: boolean;
+  thread_registry_keys?: string[];
+  restarted_to?: string;
 }
 
 export interface CocoonSummary {

@@ -21,7 +21,7 @@ describe('ToolHandler', () => {
     const handler = new ToolHandler();
     const outcome = await handler.execute({
       node: toolNode({
-        attributes: { script: 'node -e "console.log(process.env.POLLINATOR_RUN_ID)"' }
+        attributes: { script: 'node -e "console.log(process.env.NECTAR_RUN_ID)"' }
       }),
       run_id: 'run-123',
       dot_file: 'garden.dot',

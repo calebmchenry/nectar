@@ -60,7 +60,7 @@ describe('pipeline engine', () => {
 
   it('runs compliance loop with retry and loop-back', { timeout: 60_000 }, async () => {
     const workspace = await createWorkspace();
-    const sourceDot = await readFile(path.join(ROOT, 'gardens', 'compliance-loop.dot'), 'utf8');
+    const sourceDot = await readFile(path.join(ROOT, 'test', 'fixtures', 'compliance-loop.dot'), 'utf8');
     const gardenPath = path.join(workspace, 'gardens', 'compliance-loop.dot');
     await writeFile(gardenPath, sourceDot, 'utf8');
 
@@ -88,7 +88,8 @@ describe('pipeline engine', () => {
       expect(completedComplianceChecks).toBeGreaterThanOrEqual(2);
 
       const implementEntry = cocoon?.completed_nodes.find((node) => node.node_id === 'implement');
-      expect(implementEntry?.retries).toBe(1);
+      // GAP-26: failure status no longer triggers retry — only 'retry' status does
+      expect(implementEntry?.retries).toBe(0);
     } finally {
       process.chdir(originalCwd);
     }

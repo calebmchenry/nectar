@@ -51,7 +51,7 @@ function applyConditionStep(edges: GardenEdge[], outcome: NodeOutcome, context: 
 
     try {
       return evaluateConditionExpression(edge.condition, {
-        outcome: outcome.status === 'success' ? 'success' : 'failure',
+        outcome: outcome.status,
         context
       });
     } catch {
@@ -71,8 +71,39 @@ function applyPreferredLabelStep(edges: GardenEdge[], preferredLabel?: string): 
     return edges;
   }
 
-  const matched = edges.filter((edge) => edge.label === preferredLabel);
+  // GAP-15: Normalize both sides for comparison
+  const normalizedPreferred = normalizeLabel(preferredLabel);
+  const matched = edges.filter((edge) => normalizeLabel(edge.label ?? '') === normalizedPreferred);
   return matched.length > 0 ? matched : edges;
+}
+
+/**
+ * GAP-15: Normalize a label for comparison.
+ * Lowercase, trim whitespace, strip accelerator prefixes: [X] Rest, X) Rest, X - Rest
+ */
+export function normalizeLabel(label: string): string {
+  let normalized = label.trim().toLowerCase();
+
+  // Strip accelerator prefix patterns: [X] Rest, X) Rest, X - Rest
+  // [X] prefix — single alphanumeric char in brackets
+  const bracketMatch = normalized.match(/^\[([a-z0-9])\]\s*(.*)/);
+  if (bracketMatch) {
+    return bracketMatch[2]!.trim();
+  }
+
+  // X) prefix — single alphanumeric char followed by )
+  const parenMatch = normalized.match(/^([a-z0-9])\)\s*(.*)/);
+  if (parenMatch) {
+    return parenMatch[2]!.trim();
+  }
+
+  // X - prefix — single alphanumeric char followed by space-dash-space
+  const dashMatch = normalized.match(/^([a-z0-9])\s+-\s+(.*)/);
+  if (dashMatch) {
+    return dashMatch[2]!.trim();
+  }
+
+  return normalized;
 }
 
 function applySuggestedIdsStep(edges: GardenEdge[], suggestedNext?: string[]): GardenEdge[] {

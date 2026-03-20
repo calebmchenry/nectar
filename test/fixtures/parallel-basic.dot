@@ -1,0 +1,20 @@
+digraph ParallelBasic {
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Done"]
+
+    fan_out [shape=component, label="Fan Out", join_policy="wait_all"]
+    fan_in  [shape=tripleoctagon, label="Fan In"]
+
+    branch_a [shape=parallelogram, label="Branch A", script="echo branch_a"]
+    branch_b [shape=parallelogram, label="Branch B", script="echo branch_b"]
+    branch_c [shape=parallelogram, label="Branch C", script="echo branch_c"]
+
+    start -> fan_out
+    fan_out -> branch_a
+    fan_out -> branch_b
+    fan_out -> branch_c
+    branch_a -> fan_in
+    branch_b -> fan_in
+    branch_c -> fan_in
+    fan_in -> exit
+}

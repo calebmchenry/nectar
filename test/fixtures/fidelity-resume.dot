@@ -1,0 +1,14 @@
+digraph fidelity_resume {
+  graph [goal="Test degraded resume after full fidelity interruption"]
+
+  start [shape=mdiamond]
+  tool1 [shape=parallelogram, script="echo step1"]
+  agent1 [shape=box, prompt="Analyze code", fidelity="full", thread_id="analysis"]
+  agent2 [shape=box, prompt="Continue analysis", fidelity="full", thread_id="analysis"]
+  done [shape=msquare]
+
+  start -> tool1
+  tool1 -> agent1
+  agent1 -> agent2
+  agent2 -> done
+}

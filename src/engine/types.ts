@@ -1,6 +1,7 @@
-import { GardenNode } from '../garden/types.js';
+import { GardenEdge, GardenNode } from '../garden/types.js';
+import type { FidelityMode, ResolvedFidelityPlan } from './fidelity.js';
 
-export type NodeStatus = 'success' | 'failure';
+export type NodeStatus = 'success' | 'failure' | 'partial_success' | 'retry' | 'skipped';
 export type RunStatus = 'running' | 'completed' | 'failed' | 'interrupted';
 
 export interface NodeOutcome {
@@ -43,6 +44,20 @@ export interface RunResult {
   completed_nodes: CompletedNodeState[];
   interruption_reason?: string;
   error?: string;
+  /** Set when run was interrupted by loop_restart */
+  restart?: {
+    successor_run_id: string;
+    restart_depth: number;
+    target_node: string;
+    filtered_context: Record<string, string>;
+  };
+}
+
+export interface BranchResult {
+  branchId: string;
+  status: NodeStatus;
+  contextSnapshot: Record<string, string>;
+  durationMs: number;
 }
 
 export interface HandlerExecutionInput {
@@ -53,4 +68,13 @@ export interface HandlerExecutionInput {
   run_dir: string;
   context: Record<string, string>;
   abort_signal?: AbortSignal;
+  outgoing_edges?: GardenEdge[];
+  workspace_root?: string;
+  emitEvent?: (event: import('./events.js').RunEvent) => void;
+  fidelity_plan?: ResolvedFidelityPlan;
+  preamble?: string;
+  session_registry?: import('./session-registry.js').SessionRegistry;
+  /** Graph-level tool hooks */
+  graph_tool_hooks_pre?: string;
+  graph_tool_hooks_post?: string;
 }

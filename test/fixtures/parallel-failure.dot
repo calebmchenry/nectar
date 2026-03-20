@@ -1,0 +1,17 @@
+digraph ParallelFailure {
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Done"]
+
+    fan_out [shape=component, label="Fan Out", join_policy="wait_all"]
+    fan_in  [shape=tripleoctagon, label="Fan In"]
+
+    branch_ok   [shape=parallelogram, label="OK Branch", script="echo ok"]
+    branch_fail [shape=parallelogram, label="Fail Branch", script="exit 1"]
+
+    start -> fan_out
+    fan_out -> branch_ok
+    fan_out -> branch_fail
+    branch_ok -> fan_in
+    branch_fail -> fan_in
+    fan_in -> exit
+}

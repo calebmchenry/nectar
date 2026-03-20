@@ -1,0 +1,12 @@
+digraph fidelity_compact {
+  graph [goal="Test compact fidelity", default_fidelity="compact"]
+
+  start [shape=mdiamond]
+  tool1 [shape=parallelogram, script="echo hello"]
+  tool2 [shape=parallelogram, script="echo world"]
+  done [shape=msquare]
+
+  start -> tool1
+  tool1 -> tool2
+  tool2 -> done
+}

@@ -24,6 +24,34 @@ describe('conditions', () => {
     ).toBe(true);
   });
 
+  it('evaluates != operator for outcomes', () => {
+    expect(evaluateConditionExpression('outcome!=success', { outcome: 'failure', context: {} })).toBe(true);
+    expect(evaluateConditionExpression('outcome!=success', { outcome: 'success', context: {} })).toBe(false);
+    expect(evaluateConditionExpression('outcome!=failure', { outcome: 'success', context: {} })).toBe(true);
+  });
+
+  it('evaluates != operator for context', () => {
+    expect(
+      evaluateConditionExpression('context.status!=done', {
+        outcome: 'success',
+        context: { status: 'pending' }
+      })
+    ).toBe(true);
+
+    expect(
+      evaluateConditionExpression('context.status!=done', {
+        outcome: 'success',
+        context: { status: 'done' }
+      })
+    ).toBe(false);
+  });
+
+  it('evaluates extended outcome statuses', () => {
+    expect(evaluateConditionExpression('outcome=partial_success', { outcome: 'partial_success', context: {} })).toBe(true);
+    expect(evaluateConditionExpression('outcome=retry', { outcome: 'retry', context: {} })).toBe(true);
+    expect(evaluateConditionExpression('outcome=skipped', { outcome: 'skipped', context: {} })).toBe(true);
+  });
+
   it('rejects unsupported syntax', () => {
     expect(() => evaluateConditionExpression('(outcome=success)', { outcome: 'success', context: {} })).toThrow(
       /Parentheses/

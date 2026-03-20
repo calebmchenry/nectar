@@ -7,90 +7,145 @@ digraph ComplianceLoop {
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare, label="100% Compliant"]
 
+    // ── Step 1: Pin upstream specs if not already present ──────────────
+    pin_specs [
+        shape=parallelogram,
+        label="Pin Attractor Specs",
+        script="mkdir -p docs/upstream && if [ ! -f docs/upstream/attractor-spec.md ]; then curl -sfL https://raw.githubusercontent.com/strongdm/attractor/main/attractor-spec.md -o docs/upstream/attractor-spec.md && curl -sfL https://raw.githubusercontent.com/strongdm/attractor/main/coding-agent-loop-spec.md -o docs/upstream/coding-agent-loop-spec.md && curl -sfL https://raw.githubusercontent.com/strongdm/attractor/main/unified-llm-spec.md -o docs/upstream/unified-llm-spec.md && echo 'Specs pinned.'; else echo 'Specs already pinned.'; fi"
+    ]
+
+    // ── Step 2a: Compliance audit — Claude reads specs + code, writes report ──
     compliance_check [
         shape=parallelogram,
         label="Compliance Audit",
-        script="node scripts/compliance_loop.mjs audit"
+        timeout="900s",
+        script="claude --dangerously-skip-permissions --model claude-opus-4-6 -p 'Read all three attractor spec docs in docs/upstream/ (attractor-spec.md, coding-agent-loop-spec.md, unified-llm-spec.md). Then read every source file under src/. Compare the implementation against EVERY requirement in the specs. Write a compliance report to docs/compliance-report.md with two sections: IMPLEMENTED (with evidence) and GAPS (specific unimplemented features with spec references). If there are zero gaps, write COMPLIANT as the first line. If there are gaps, write GAPS REMAINING as the first line.'"
     ]
+
+    // ── Step 2b: Check compliance report — fast gate ──
+    compliance_gate [
+        shape=parallelogram,
+        label="Check Compliance",
+        script="grep -q '^COMPLIANT' docs/compliance-report.md"
+    ]
+
+    // ── Step 3: Fan-out drafts — three independent sprint drafts concurrently ──
+    // Weather report: Sprint Planning → consensus(opus-4.6, gpt-5.4), Gemini can improve consensus
+    fan_out_drafts [shape=component, label="Fan Out Drafts", join_policy="wait_all"]
+    fan_in_drafts  [shape=tripleoctagon, label="Fan In Drafts"]
 
     claude_draft [
         shape=parallelogram,
-        label="Claude Draft",
-        script="node scripts/compliance_loop.mjs draft --provider claude"
+        label="Claude Sprint Draft",
+        timeout="900s",
+        script="claude --dangerously-skip-permissions --model claude-opus-4-6 -p 'Read docs/compliance-report.md and docs/INTENT.md. Design the NEXT sprint to close the most impactful gaps. Write an independent sprint draft to docs/sprints/drafts/NEXT-CLAUDE-DRAFT.md following the structure in docs/sprints/SPRINT-001.md as a template: Overview, Use Cases, Architecture, Implementation phases, Files Summary, Definition of Done, Risks, Dependencies. Be specific and opinionated. Focus on what can be completed in one sprint.'"
     ]
 
     codex_draft [
         shape=parallelogram,
-        label="Codex Draft",
-        script="node scripts/compliance_loop.mjs draft --provider codex"
+        label="GPT-5.4 Sprint Draft",
+        timeout="900s",
+        script="codex exec --model gpt-5.4 'Read docs/compliance-report.md and docs/INTENT.md. Design the NEXT sprint to close the most impactful gaps. Write an independent sprint draft to docs/sprints/drafts/NEXT-CODEX-DRAFT.md following the structure in docs/sprints/SPRINT-001.md as a template: Overview, Use Cases, Architecture, Implementation phases, Files Summary, Definition of Done, Risks, Dependencies. Be specific and opinionated. Focus on what can be completed in one sprint.'"
     ]
 
     gemini_draft [
         shape=parallelogram,
-        label="Gemini Draft",
-        script="node scripts/compliance_loop.mjs draft --provider gemini"
+        label="Gemini Sprint Draft",
+        timeout="900s",
+        script="gemini --yolo --model gemini-3.1-pro-preview-customtools --prompt 'Read docs/compliance-report.md and docs/INTENT.md. Design the NEXT sprint to close the most impactful gaps. Write an independent sprint draft to docs/sprints/drafts/NEXT-GEMINI-DRAFT.md following the structure in docs/sprints/SPRINT-001.md as a template: Overview, Use Cases, Architecture, Implementation phases, Files Summary, Definition of Done, Risks, Dependencies. Be specific and opinionated. Focus on what can be completed in one sprint.'"
     ]
+
+    // ── Step 4: Fan-out critiques — each reviews the other two concurrently ──
+    // Weather report: Architectural Critique → gpt-5.4 at extra high reasoning
+    fan_out_critiques [shape=component, label="Fan Out Critiques", join_policy="wait_all"]
+    fan_in_critiques  [shape=tripleoctagon, label="Fan In Critiques"]
 
     claude_critique [
         shape=parallelogram,
-        label="Claude Critique",
-        script="node scripts/compliance_loop.mjs critique --provider claude"
+        label="GPT-5.4 Critique",
+        timeout="900s",
+        script="codex exec --model gpt-5.4 --reasoning extra-high 'Read docs/sprints/drafts/NEXT-CODEX-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CLAUDE-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
     ]
 
     codex_critique [
         shape=parallelogram,
-        label="Codex Critique",
-        script="node scripts/compliance_loop.mjs critique --provider codex"
+        label="Opus Critique",
+        timeout="900s",
+        script="claude --dangerously-skip-permissions --model claude-opus-4-6 -p 'Read docs/sprints/drafts/NEXT-CLAUDE-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CODEX-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
     ]
 
     gemini_critique [
         shape=parallelogram,
         label="Gemini Critique",
-        script="node scripts/compliance_loop.mjs critique --provider gemini"
+        timeout="900s",
+        script="gemini --yolo --model gemini-3.1-pro-preview-customtools --prompt 'Read docs/sprints/drafts/NEXT-CLAUDE-DRAFT.md and docs/sprints/drafts/NEXT-CODEX-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-GEMINI-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
     ]
 
+    // ── Step 5: Merge all drafts + critiques into final sprint ─────────
+    // Weather report: Sprint Planning merge → consensus(opus-4.6, gpt-5.4)
     merge_sprint [
         shape=parallelogram,
         label="Merge Sprint",
-        script="node scripts/compliance_loop.mjs merge"
+        timeout="900s",
+        script="claude --dangerously-skip-permissions --model claude-opus-4-6 -p 'Read ALL draft and critique files in docs/sprints/drafts/NEXT-*.md. Synthesize the best ideas into a final sprint document. Determine the next sprint number by checking docs/sprints/ledger.tsv. Write the merged sprint to docs/sprints/SPRINT-NNN.md (replace NNN with the correct number). Write merge notes to docs/sprints/drafts/NEXT-MERGE-NOTES.md explaining what was taken from each draft and why. Then clean up: rename all NEXT-*.md files by prepending the sprint number.'"
     ]
 
+    // ── Step 6: Fetch weather report for model selection ───────────────
     fetch_weather [
         shape=parallelogram,
         label="Fetch Weather Report",
-        script="node scripts/compliance_loop.mjs fetch-weather"
+        script="curl -sf https://factory.strongdm.ai/weather-report.md -o docs/weather-report.md && echo 'Weather report fetched.' || echo 'Weather fetch failed, using defaults.'"
     ]
 
+    // ── Step 7: Implement the sprint ───────────────────────────────────
+    // Weather report: Implementation → gpt-5.3-codex (default)
     implement [
         shape=parallelogram,
         label="Implement Sprint",
-        script="node scripts/compliance_loop.mjs implement",
+        timeout="1800s",
+        script="codex exec --model gpt-5.3-codex 'Read the latest SPRINT-*.md file in docs/sprints/ (the highest numbered one). This is the sprint you need to implement. Read all project conventions and existing code. Work through ALL items in the Definition of Done. Implement all required functionality. Run npm run build and npm test to validate. Fix any build or test failures. Do NOT commit — just implement and verify.'",
         max_retries=2
     ]
 
+    // ── Step 8: Independent validation ─────────────────────────────────
+    // Weather report: QA Orchestration → opus-4.6 (default)
     validate [
         shape=parallelogram,
         label="Validate Implementation",
-        script="node scripts/compliance_loop.mjs validate"
+        timeout="900s",
+        script="claude --dangerously-skip-permissions --model claude-opus-4-6 -p 'Read the latest SPRINT-*.md file in docs/sprints/ (the highest numbered one). Go through the Definition of Done item by item. For each item, verify it is actually satisfied — run commands, read code, check test output. Run npm run build and npm test. Write a validation report to docs/sprints/validation-report.md. If ALL DoD items pass, exit 0. If ANY fail, list what failed and exit 1.'"
     ]
 
-    start -> compliance_check
+    // ── Edges ──────────────────────────────────────────────────────────
+    start -> pin_specs
 
-    compliance_check -> exit         [label="Compliant", condition="outcome=success"]
-    compliance_check -> claude_draft [label="Gaps Found", condition="outcome=fail"]
-    compliance_check -> claude_draft [label="Fallback"]
+    pin_specs -> compliance_check
+    compliance_check -> compliance_gate
 
-    claude_draft    -> codex_draft
-    codex_draft     -> gemini_draft
-    gemini_draft    -> claude_critique
-    claude_critique -> codex_critique
-    codex_critique  -> gemini_critique
-    gemini_critique -> merge_sprint
+    compliance_gate -> exit             [label="Compliant", condition="outcome=success"]
+    compliance_gate -> fan_out_drafts   [label="Gaps Found", condition="outcome=fail"]
+    compliance_gate -> fan_out_drafts   [label="Fallback"]
+
+    fan_out_drafts  -> claude_draft
+    fan_out_drafts  -> codex_draft
+    fan_out_drafts  -> gemini_draft
+    claude_draft    -> fan_in_drafts
+    codex_draft     -> fan_in_drafts
+    gemini_draft    -> fan_in_drafts
+    fan_in_drafts   -> fan_out_critiques
+
+    fan_out_critiques  -> claude_critique
+    fan_out_critiques  -> codex_critique
+    fan_out_critiques  -> gemini_critique
+    claude_critique    -> fan_in_critiques
+    codex_critique     -> fan_in_critiques
+    gemini_critique    -> fan_in_critiques
+    fan_in_critiques   -> merge_sprint
     merge_sprint    -> fetch_weather
     fetch_weather   -> implement
     implement       -> validate
 
-    validate -> compliance_check [label="Pass", condition="outcome=success"]
+    validate -> compliance_check  [label="Pass", condition="outcome=success"]
     validate -> implement        [label="Fix Issues", condition="outcome=fail"]
     validate -> implement        [label="Fallback"]
 }

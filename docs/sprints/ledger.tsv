@@ -1,2 +1,6 @@
 sprint_id	title	status	updated_at
-001	Working CLI That Runs DOT Files	in_progress	2026-03-19T18:34:17Z
+001	Working CLI That Runs DOT Files	completed	2026-03-19T19:17:53Z
+008	Seedbed Foundation & DOT Authoring Quality-of-Life	planned	2026-03-19T00:00:00Z
+016	Unified LLM Client — Middleware, Model Catalog & Telemetry	planned	2026-03-20T00:00:00Z
+017	Manager Loop, Fresh-Run Restart, and Tool Hooks	planned	2026-03-20T00:00:00Z
+018	GitHub Release — Binaries, CI/CD, Install, Upgrade, README, LICENSE	completed	2026-03-20T05:10:00Z

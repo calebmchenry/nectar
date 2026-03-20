@@ -1,0 +1,12 @@
+digraph HumanGate {
+  start [shape=Mdiamond, label="Start"]
+  approval [shape=hexagon, label="Approve deployment?"]
+  deploy [shape=parallelogram, label="Deploy", script="echo deploying"]
+  reject_exit [shape=Msquare, label="Rejected"]
+  done [shape=Msquare, label="Done"]
+
+  start -> approval
+  approval -> deploy [label="[A] Approve"]
+  approval -> reject_exit [label="[R] Reject"]
+  deploy -> done
+}

@@ -1,0 +1,18 @@
+digraph GoalGateRetry {
+  graph [
+    goal="Test goal gate enforcement"
+  ]
+
+  start [shape=Mdiamond, label="Start"]
+  work [
+    shape=parallelogram,
+    label="Do Work",
+    script="echo working",
+    goal_gate="true",
+    retry_target="work"
+  ]
+  done [shape=Msquare, label="Done"]
+
+  start -> work
+  work -> done
+}

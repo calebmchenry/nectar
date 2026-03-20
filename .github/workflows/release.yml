@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - name: Inject version from tag
+        run: NECTAR_VERSION="${GITHUB_REF_NAME#v}" node scripts/release/write-version.mjs
+      - run: NECTAR_VERSION="${GITHUB_REF_NAME#v}" npm run build
+      - run: npm test
+      - name: Cross-compile binaries
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          bun build --compile --target=bun-darwin-arm64 src/cli/index.ts --outfile dist/nectar-darwin-arm64
+          bun build --compile --target=bun-darwin-x64 src/cli/index.ts --outfile dist/nectar-darwin-x64
+          bun build --compile --target=bun-linux-x64 src/cli/index.ts --outfile dist/nectar-linux-x64
+          bun build --compile --target=bun-linux-arm64 src/cli/index.ts --outfile dist/nectar-linux-arm64
+      - name: Generate checksums
+        run: cd dist && sha256sum nectar-* > SHA256SUMS
+      - name: Verify 5 release assets
+        run: test $(ls dist/ | wc -l) -eq 5
+      - name: Create GitHub Release
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

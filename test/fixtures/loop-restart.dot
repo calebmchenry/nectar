@@ -1,0 +1,11 @@
+digraph G {
+  start [shape=Mdiamond]
+  implement [shape=parallelogram, script="echo implement"]
+  review [shape=parallelogram, script="echo review"]
+  done [shape=Msquare]
+
+  start -> implement
+  implement -> review
+  review -> done [condition="outcome=success"]
+  review -> implement [condition="outcome=failure", loop_restart="true"]
+}

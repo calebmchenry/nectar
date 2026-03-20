@@ -1,0 +1,17 @@
+digraph ParallelFirstSuccess {
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Done"]
+
+    fan_out [shape=component, label="Fan Out", join_policy="first_success"]
+    fan_in  [shape=tripleoctagon, label="Fan In"]
+
+    branch_fast [shape=parallelogram, label="Fast Branch", script="echo fast"]
+    branch_slow [shape=parallelogram, label="Slow Branch", script="sleep 2 && echo slow"]
+
+    start -> fan_out
+    fan_out -> branch_fast
+    fan_out -> branch_slow
+    branch_fast -> fan_in
+    branch_slow -> fan_in
+    fan_in -> exit
+}

@@ -1,0 +1,8 @@
+digraph G {
+  start [shape=Mdiamond]
+  work [shape=parallelogram, script="echo child-work"]
+  done [shape=Msquare]
+
+  start -> work
+  work -> done
+}

@@ -1,0 +1,23 @@
+digraph pipeline {
+  model_stylesheet="* { llm_provider: anthropic } box { llm_model: claude-sonnet-4-20250514 } .drafts { llm_provider: openai; llm_model: gpt-4o } #deep_review { llm_model: claude-opus-4-20250514; reasoning_effort: high }"
+  default_fidelity="summary:medium"
+
+  start [shape=Mdiamond]
+
+  subgraph cluster_drafts {
+    label="drafts"
+    claude_draft [shape=box, prompt="Draft with Claude"]
+    gemini_draft [shape=box, prompt="Draft with Gemini"]
+  }
+
+  deep_review [shape=box, prompt="Deep review", class="reviewers"]
+  implement [shape=parallelogram, script="echo implement"]
+  done [shape=Msquare]
+
+  start -> claude_draft
+  start -> gemini_draft
+  claude_draft -> deep_review
+  gemini_draft -> deep_review
+  deep_review -> implement
+  implement -> done
+}

@@ -345,14 +345,47 @@ The attractor implementation must cover:
 - Exact route names may be chosen by the implementer, but the contract surface above is required so the web UI has a stable local backend.
 
 ### CLI Requirements
-- Single binary distribution (or minimal install)
-- Cross-platform: macOS (ARM + Intel), Linux (x86_64) at minimum
-- Self-update mechanism
+- Single binary distribution via `bun build --compile`
+- Cross-platform: macOS (ARM + Intel), Linux (x86_64, ARM64) at minimum
 - Shell completions (bash, zsh, fish)
 - Config file support (YAML)
 - Rich terminal output (colors, emoji, Unicode box drawing, spinners, progress bars)
 - Graceful degradation on dumb terminals
 - Pipe-friendly (detect TTY, output plain text when piped)
+
+#### Self-Update (`nectar upgrade`)
+
+The CLI must include a built-in `nectar upgrade` command that updates the binary in-place from GitHub Releases. No package manager, no external tools — the binary updates itself.
+
+**Behavior:**
+
+1. **Check**: Hit the GitHub Releases API (`/repos/<org>/nectar/releases/latest`), compare the release `tag_name` against the running binary's baked-in version. If already current, say so and exit.
+2. **Download**: Detect the current platform and architecture (`process.platform` + `process.arch`), map to the correct release asset name (e.g., `nectar-darwin-arm64`), and download it to a temporary file.
+3. **Verify**: Download the SHA256 checksums file from the same release and verify the downloaded binary's checksum matches. Abort if it doesn't.
+4. **Replace**: Resolve the path of the currently running binary (via `process.argv[0]` or symlink resolution). Since you can't overwrite a running binary directly, use the rename-into-place pattern: write the new binary to a temp path, unlink the old one, rename the new one into place. Preserve file permissions.
+5. **Confirm**: Print the old and new versions with themed output.
+
+**Flags:**
+- `nectar upgrade` — interactive upgrade with confirmation
+- `nectar upgrade --check` — just check for updates, don't install
+- `nectar upgrade --yes` — skip confirmation prompt
+
+**Example output:**
+```
+$ nectar upgrade
+🐝 Checking the hive for updates...
+🍯 New nectar available! v0.3.0 → v0.4.0
+⬇️  Downloading nectar-darwin-arm64...
+✅ Verified checksum
+🔄 Replacing binary...
+🌸 Upgraded! You're now on v0.4.0
+```
+
+**Edge cases to handle:**
+- No network connectivity (fail gracefully with a clear message)
+- Permission denied on the binary path (suggest `sudo` or relocating)
+- Pre-release/draft releases should be skipped unless an explicit `--pre` flag is passed
+- Interrupted downloads should clean up temp files
 
 ### Web UI Requirements
 - Modern SPA (React, Svelte, or similar — choose whatever produces the best result)

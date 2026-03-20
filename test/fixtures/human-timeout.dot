@@ -1,0 +1,12 @@
+digraph HumanTimeout {
+  start [shape=Mdiamond, label="Start"]
+  gate [shape=hexagon, label="Continue?", timeout="2s", "human.default_choice"="skip"]
+  work [shape=parallelogram, label="Work", script="echo working"]
+  skip_exit [shape=Msquare, label="Skipped"]
+  done [shape=Msquare, label="Done"]
+
+  start -> gate
+  gate -> work [label="continue"]
+  gate -> skip_exit [label="skip"]
+  work -> done
+}

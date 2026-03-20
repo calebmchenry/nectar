@@ -1,0 +1,13 @@
+digraph G {
+  graph [
+    "stack.child_dotfile"="gardens/child.dot"
+    "stack.child_workdir"="workdir"
+  ]
+
+  start [shape=Mdiamond]
+  supervisor [shape=house, label="Supervisor", prompt="Focus on tests.", "manager.poll_interval"="5s", "manager.max_cycles"="50", "manager.stop_condition"="context.stack.child.status=completed", "manager.actions"="observe,steer,wait"]
+  done [shape=Msquare]
+
+  start -> supervisor
+  supervisor -> done
+}

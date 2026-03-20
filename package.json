@@ -4,23 +4,28 @@
   "description": "Pollinator CLI for DOT-based pipelines",
   "type": "module",
   "bin": {
-    "pollinator": "dist/cli/index.js"
+    "nectar": "dist/cli/index.js"
   },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "prebuild": "node scripts/release/write-version.mjs",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "start": "tsx src/cli/index.ts"
+    "start": "tsx src/cli/index.ts",
+    "test:smoke:llm": "tsx src/llm/smoke.ts"
   },
   "dependencies": {
     "@ts-graphviz/parser": "^0.4.0",
+    "ajv": "^8.18.0",
     "chalk": "^5.4.1",
     "commander": "^14.0.1",
     "execa": "^9.6.0",
-    "ora": "^8.2.0"
+    "ignore": "^7.0.5",
+    "ora": "^8.2.0",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

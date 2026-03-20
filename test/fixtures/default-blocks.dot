@@ -1,0 +1,13 @@
+digraph default_blocks {
+  node [shape=box, timeout="120s"]
+  edge [weight=2]
+
+  start [shape=Mdiamond]
+  plan [prompt="Plan the approach"]
+  implement [prompt="Write the code"]
+  review [prompt="Review the code"]
+  test [shape=parallelogram, script="npm test"]
+  done [shape=Msquare]
+
+  start -> plan -> implement -> review -> test -> done
+}

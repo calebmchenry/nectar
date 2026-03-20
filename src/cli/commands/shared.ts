@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { GardenParseError, hashDotSource, parseGardenFile } from '../../garden/parse.js';
-import { validateGarden } from '../../garden/validate.js';
+import { transformAndValidate } from '../../garden/pipeline.js';
 import { Diagnostic, GardenGraph } from '../../garden/types.js';
 
 export interface LoadValidationResult {
@@ -12,7 +12,7 @@ export interface LoadValidationResult {
 export async function loadAndValidate(dotFile: string): Promise<LoadValidationResult> {
   try {
     const graph = await parseGardenFile(dotFile);
-    const diagnostics = validateGarden(graph);
+    const { diagnostics } = transformAndValidate(graph);
     return {
       graph,
       diagnostics,

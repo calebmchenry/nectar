@@ -1,0 +1,104 @@
+digraph ComplianceLoop {
+    graph [
+        goal="Continuously verify Nectar against the pinned attractor specs, draft a concrete sprint from the current gaps, implement it, validate it independently, and loop until the workspace is genuinely compliant.",
+        label="Nectar Compliance Loop"
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="100% Compliant"]
+
+    pin_specs [
+        shape=parallelogram,
+        label="Pin Attractor Specs",
+        script="echo specs pinned"
+    ]
+
+    compliance_check [
+        shape=parallelogram,
+        label="Compliance Audit",
+        script="node scripts/compliance_loop.mjs audit"
+    ]
+
+    claude_draft [
+        shape=parallelogram,
+        label="Claude Draft",
+        script="node scripts/compliance_loop.mjs draft --provider claude"
+    ]
+
+    codex_draft [
+        shape=parallelogram,
+        label="Codex Draft",
+        script="node scripts/compliance_loop.mjs draft --provider codex"
+    ]
+
+    gemini_draft [
+        shape=parallelogram,
+        label="Gemini Draft",
+        script="node scripts/compliance_loop.mjs draft --provider gemini"
+    ]
+
+    claude_critique [
+        shape=parallelogram,
+        label="Claude Critique",
+        script="node scripts/compliance_loop.mjs critique --provider claude"
+    ]
+
+    codex_critique [
+        shape=parallelogram,
+        label="Codex Critique",
+        script="node scripts/compliance_loop.mjs critique --provider codex"
+    ]
+
+    gemini_critique [
+        shape=parallelogram,
+        label="Gemini Critique",
+        script="node scripts/compliance_loop.mjs critique --provider gemini"
+    ]
+
+    merge_sprint [
+        shape=parallelogram,
+        label="Merge Sprint",
+        script="node scripts/compliance_loop.mjs merge"
+    ]
+
+    fetch_weather [
+        shape=parallelogram,
+        label="Fetch Weather Report",
+        script="node scripts/compliance_loop.mjs fetch-weather"
+    ]
+
+    implement [
+        shape=parallelogram,
+        label="Implement Sprint",
+        script="node scripts/compliance_loop.mjs implement",
+        max_retries=2
+    ]
+
+    validate [
+        shape=parallelogram,
+        label="Validate Implementation",
+        script="node scripts/compliance_loop.mjs validate"
+    ]
+
+    start -> pin_specs
+
+    pin_specs -> compliance_check
+
+    compliance_check -> exit         [label="Compliant", condition="outcome=success"]
+    compliance_check -> claude_draft [label="Gaps Found", condition="outcome=fail"]
+    compliance_check -> claude_draft [label="Fallback"]
+
+    claude_draft    -> codex_draft
+    codex_draft     -> gemini_draft
+    gemini_draft    -> claude_critique
+    claude_critique -> codex_critique
+    codex_critique  -> gemini_critique
+    gemini_critique -> merge_sprint
+    merge_sprint    -> fetch_weather
+    fetch_weather   -> implement
+    implement       -> validate
+
+    validate -> compliance_check [label="Pass", condition="outcome=success"]
+    validate -> implement        [label="Fix Issues", condition="outcome=fail"]
+    validate -> implement        [label="Fallback"]
+}
