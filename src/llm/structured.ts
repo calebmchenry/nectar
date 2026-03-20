@@ -1,22 +1,8 @@
 import type { GenerateResponse, Message } from './types.js';
 import { getTextContent } from './types.js';
-import { createRequire } from 'node:module';
+import AjvModule from 'ajv';
 
-interface AjvValidateFunction {
-  (data: unknown): boolean;
-  errors?: Array<{ instancePath?: string; message?: string }> | null;
-}
-
-interface AjvInstance {
-  compile(schema: Record<string, unknown>): AjvValidateFunction;
-}
-
-interface AjvConstructor {
-  new(opts?: Record<string, unknown>): AjvInstance;
-}
-
-const require = createRequire(import.meta.url);
-const Ajv = require('ajv') as AjvConstructor;
+const Ajv = AjvModule.default ?? AjvModule;
 const ajv = new Ajv({ allErrors: true });
 
 /**
