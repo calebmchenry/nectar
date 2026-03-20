@@ -1,6 +1,6 @@
 {
   "name": "nectar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pollinator CLI for DOT-based pipelines",
   "type": "module",
   "bin": {
