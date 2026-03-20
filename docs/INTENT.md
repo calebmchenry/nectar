@@ -39,7 +39,7 @@ A **complete, 100%-to-spec implementation** of a pinned snapshot of [strongdm/at
 
 ### 2B. A CLI ("Pollinator")
 
-A command-line tool called `pollinator` (or `nectar` — the CLI is the pollinator, the system is the nectar). This CLI must be:
+A command-line tool called **`nectar`**. The CLI binary, the system, and the brand are all just "Nectar." The pollination metaphor still permeates the themed output, terminology, and personality — but the command users type is `nectar`. This CLI must be:
 
 - **Genuinely fun to use.** Not "enterprise fun." Actually fun. Fire emojis, bee/flower/honey puns, colorful output, witty status messages, satisfying spinners and progress bars. The kind of CLI you show people because it makes them smile.
 - **Feature-complete for the full attractor spec.** Every operation the HTTP API supports should be accessible from the CLI: run pipelines, watch status, stream events, answer human gates, inspect checkpoints, validate DOT files, render graphs.
@@ -58,7 +58,7 @@ The naming convention follows the pollination metaphor:
 | Backlog item / Idea | Seed |
 | High-priority item | Queen's Order |
 | Completed item | Honey |
-| The CLI itself | Pollinator |
+| The CLI binary | Nectar |
 | AI analysis | Swarm Intelligence |
 | Checkpoint | Cocoon |
 | Error / Failure | Wilt |
@@ -67,21 +67,21 @@ The naming convention follows the pollination metaphor:
 Use these naturally in output, help text, and status messages. Don't force them where they'd be confusing — clarity beats cleverness. But lean into the theme hard. Examples:
 
 ```
-$ pollinator run my-pipeline.dot
-🐝 Pollinator buzzing...
+$ nectar run my-pipeline.dot
+🐝 Nectar buzzing...
 🌸 Garden loaded: my-pipeline.dot (7 petals, 2 goal gates)
 🌻 Petal [plan] blooming... ✅ sweet success (3.2s)
 🌻 Petal [implement] blooming...
 ```
 
 ```
-$ pollinator seed "Add rate limiting to the API gateway"
+$ nectar seed "Add rate limiting to the API gateway"
 🌱 Seed planted! (#42)
-💡 Tip: Run `pollinator swarm 42` to get AI analysis from the hive mind
+💡 Tip: Run `nectar swarm 42` to get AI analysis from the hive mind
 ```
 
 ```
-$ pollinator status
+$ nectar status
 🍯 Honey jar: 12 completed | 🌱 Seedbed: 8 ideas | 🔥 Queen's Orders: 2
 ```
 
@@ -254,7 +254,7 @@ The synthesis view in the web UI should be built from these normalized fields pl
 Nectar must treat interruption as a normal event, not an edge case. Laptops die, users hit Ctrl+C, LLM providers go down, connections drop. The system should shrug these off gracefully:
 
 - **Pipeline checkpointing is mandatory.** Every completed node writes a checkpoint before the next node begins. On resume, execution picks up from the last checkpoint — not from the beginning.
-- **Resume is a first-class operation.** The CLI (`pollinator resume`), web UI, and HTTP API must all support resuming an interrupted pipeline run. The user should never need to manually reconstruct state or re-run completed work.
+- **Resume is a first-class operation.** The CLI (`nectar resume`), web UI, and HTTP API must all support resuming an interrupted pipeline run. The user should never need to manually reconstruct state or re-run completed work.
 - **Partial progress is preserved.** If a codergen node was mid-stream when interrupted, the checkpoint should capture what was completed so the resumed run can decide whether to retry the node or accept partial output (configurable per node).
 - **Cocoons are durable and self-describing.** Checkpoint files (cocoons) must contain enough context to resume without access to the original process memory: graph state, completed node outputs, pending edges, artifact references, and the active context store snapshot.
 - **Interruption metadata is recorded.** When a run is interrupted (signal, crash, timeout, provider failure), the cocoon should record _why_ it stopped (if known) so the user or an agent can make informed decisions about whether and how to resume.
@@ -373,7 +373,7 @@ Nectar is done when:
 
 1. **An agent can read the pinned three attractor NLSpec documents, compare them against the Nectar implementation, and find zero unimplemented features.** This is the hard requirement. Full spec compliance.
 
-2. **A user can install Nectar with one command**, run `pollinator` in a terminal, and feel like they're using a polished, modern, delightful CLI tool.
+2. **A user can install Nectar with one command**, run `nectar` in a terminal, and feel like they're using a polished, modern, delightful CLI tool.
 
 3. **A user can launch the web UI**, create a pipeline by typing what they want in natural language, see it rendered as a graph in real-time, edit it, run it, and watch it execute — all from the browser.
 
@@ -385,17 +385,94 @@ Nectar is done when:
 
 ---
 
-## 6. What This Document Does NOT Cover
+## 6. Distribution & Publishing
 
-- **Specific language/framework choices** — The implementer should choose the best tools for the job. The attractor specs are language-agnostic.
-- **Detailed UI mockups** — The web UI should be modern and polished. Specifics are left to the implementer's taste, guided by the requirements above.
-- **Deployment infrastructure** — How Nectar itself is hosted/deployed is out of scope. It runs locally.
-- **Authentication/authorization** — Nectar is a local development tool. No auth needed for v1.
-- **Pricing/licensing** — Open source, license TBD.
+Nectar is distributed as **standalone single binaries** — no Node.js, npm, or other runtime required for end users. The build, release, and install workflow is:
+
+### Build: Bun Compile
+
+Use `bun build --compile` to produce self-contained executables. Bun bundles the TypeScript source, all dependencies, and a minimal runtime into a single binary. No code changes are needed — the codebase is already pure ESM with no native dependencies.
+
+```bash
+# Local dev build
+bun build --compile src/cli/index.ts --outfile nectar
+
+# Cross-compile for release targets
+bun build --compile --target=bun-darwin-arm64  src/cli/index.ts --outfile nectar-darwin-arm64
+bun build --compile --target=bun-darwin-x64    src/cli/index.ts --outfile nectar-darwin-x64
+bun build --compile --target=bun-linux-x64     src/cli/index.ts --outfile nectar-linux-x64
+bun build --compile --target=bun-linux-arm64   src/cli/index.ts --outfile nectar-linux-arm64
+```
+
+Target platforms (minimum): macOS ARM (Apple Silicon), macOS x64 (Intel), Linux x64, Linux ARM64. Windows is nice-to-have but not required for v1.
+
+### Release: GitHub Releases
+
+Releases are published to GitHub Releases — **not npm**. Each release includes:
+
+- Platform-specific binaries as release assets (e.g., `nectar-darwin-arm64`, `nectar-linux-x64`)
+- SHA256 checksums file
+- A changelog (can be auto-generated from commits/PRs between tags)
+- Semantic versioning (`v0.1.0`, `v0.2.0`, etc.)
+
+### Install: Download and Run
+
+Users install by downloading the binary for their platform. Provide a convenience install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<org>/nectar/main/install.sh | sh
+```
+
+The install script should:
+- Detect platform (OS + arch)
+- Download the correct binary from the latest GitHub Release
+- Place it in a sensible location (`~/.local/bin`, `/usr/local/bin`, or user's choice)
+- Verify the SHA256 checksum
+- Print a success message with the pollinator theme
+
+Homebrew tap is a nice-to-have for macOS users but not required for v1.
+
+### CI/CD: GitHub Actions
+
+A GitHub Actions workflow must:
+
+1. **On every push/PR to main:**
+   - Run `npm run build` (TypeScript type checking)
+   - Run `npm test` (vitest suite)
+   - Lint if configured
+
+2. **On tag push (`v*`):**
+   - Cross-compile binaries for all target platforms using `bun build --compile`
+   - Generate SHA256 checksums
+   - Create a GitHub Release with all binaries and checksums attached
+   - Auto-generate release notes from commits since last tag
+
+### README
+
+The repository must have a `README.md` that includes:
+
+- What Nectar/Pollinator is (one-paragraph elevator pitch)
+- Installation instructions (install script + manual download)
+- A quick-start example: a simple `.dot` garden file and the command to run it
+- A screenshot or terminal recording of the CLI in action (the themed output is a selling point)
+- Link to the attractor spec for people who want to understand the pipeline format
+- License badge
+
+### LICENSE
+
+The repository must include a `LICENSE` file. Use **MIT** unless there's a reason to choose otherwise. This must be in place before any public release — no license means no one can legally use it.
 
 ---
 
-## 7. Research Pointers
+## 7. What This Document Does NOT Cover
+
+- **Detailed UI mockups** — The web UI should be modern and polished. Specifics are left to the implementer's taste, guided by the requirements above.
+- **Authentication/authorization** — Nectar is a local development tool. No auth needed for v1.
+- **npm publishing** — Nectar is not distributed via npm. Single binaries via GitHub Releases only.
+
+---
+
+## 8. Research Pointers
 
 An implementing agent should start by reading:
 
@@ -407,6 +484,14 @@ An implementing agent should start by reading:
 3. Current best practices for CLI tools (consider tools like `charm.sh/bubbletea`, `oclif`, `clap`, `cobra` depending on language choice)
 4. Real-time web UI patterns (SSE event streams, optimistic updates, collaborative editing)
 5. Kanban board implementations for UI reference
+
+---
+
+---
+
+## 9. Sprint Prioritization Notes
+
+**Next sprint MUST prioritize parallel execution (fan-out/fan-in).** The `component` (parallel), `tripleoctagon` (fan-in), and related join policies (`wait_all`, `first_success`) are blocking real-world pipeline performance. The compliance loop itself has 3 independent draft nodes and 3 independent critique nodes that should run concurrently but currently execute sequentially because parallel handlers don't exist yet. This is the highest-impact gap remaining in the engine — implement it next.
 
 ---
 
