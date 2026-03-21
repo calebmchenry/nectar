@@ -1,0 +1,8 @@
+digraph InvalidChild {
+  c_start [shape=Mdiamond]
+  bad [shape=octagon]
+  c_exit [shape=Msquare]
+
+  c_start -> bad
+  bad -> c_exit
+}

@@ -1,0 +1,22 @@
+:root {
+  --nectar-bg: #f7f2e8;
+  --nectar-panel: #fffdf8;
+  --nectar-panel-2: #f2ede1;
+  --nectar-border: #d4cbb8;
+  --nectar-text: #2b2a27;
+  --nectar-muted: #6f6559;
+  --nectar-sage: #6f8f7e;
+  --nectar-lavender: #8578a8;
+  --nectar-coral: #da7463;
+  --nectar-honey: #d79c42;
+  --nectar-wilted: #905a5a;
+  --nectar-ok: #3f7f53;
+  --nectar-warn: #9a6f2a;
+  --nectar-error: #8f3f3f;
+  --shadow-soft: 0 8px 28px rgba(61, 44, 18, 0.12);
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --font-heading: 'Palatino Linotype', 'Book Antiqua', Palatino, serif;
+  --font-body: 'Avenir Next', 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --font-mono: 'Iosevka', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}

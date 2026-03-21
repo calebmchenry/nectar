@@ -1,0 +1,8 @@
+digraph Leaf {
+  l_start [shape=Mdiamond]
+  l_work [shape=parallelogram, script="echo leaf"]
+  l_exit [shape=Msquare]
+
+  l_start -> l_work
+  l_work -> l_exit
+}

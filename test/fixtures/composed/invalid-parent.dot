@@ -1,0 +1,8 @@
+digraph InvalidParent {
+  start [shape=Mdiamond]
+  bad_module [shape=component, "compose.dotfile"="invalid-child.dot"]
+  done [shape=Msquare]
+
+  start -> bad_module
+  bad_module -> done
+}

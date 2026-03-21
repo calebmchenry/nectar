@@ -1,0 +1,8 @@
+digraph NestedParent {
+  start [shape=Mdiamond]
+  mid_module [shape=component, "compose.dotfile"="nested-mid.dot"]
+  done [shape=Msquare]
+
+  start -> mid_module
+  mid_module -> done
+}

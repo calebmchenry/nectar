@@ -1,0 +1,8 @@
+digraph ParentSuccess {
+  start [shape=Mdiamond]
+  review [shape=component, "compose.dotfile"="success-child.dot"]
+  done [shape=Msquare]
+
+  start -> review
+  review -> done
+}

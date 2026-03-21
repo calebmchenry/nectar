@@ -1,0 +1,8 @@
+digraph MissingParent {
+  start [shape=Mdiamond]
+  missing [shape=component, "compose.dotfile"="does-not-exist.dot"]
+  done [shape=Msquare]
+
+  start -> missing
+  missing -> done
+}

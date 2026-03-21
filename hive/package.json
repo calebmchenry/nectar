@@ -1,0 +1,9 @@
+{
+  "name": "nectar-hive",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ../node_modules/vite/bin/vite.js --config vite.config.ts",
+    "build": "node ../node_modules/vite/bin/vite.js build --config vite.config.ts"
+  }
+}

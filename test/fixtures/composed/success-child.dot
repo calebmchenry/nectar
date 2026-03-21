@@ -1,0 +1,17 @@
+digraph ReviewLoop {
+  graph [
+    default_max_retries="2"
+    default_fidelity="summary:high"
+    "tool_hooks.pre"="echo pre-hook"
+    "tool_hooks.post"="echo post-hook"
+    goal="child review goal"
+    model_stylesheet="box { llm_provider: simulation }"
+  ]
+
+  c_start [shape=Mdiamond]
+  draft [shape=box, prompt="Draft for $goal"]
+  c_exit [shape=Msquare]
+
+  c_start -> draft
+  draft -> c_exit
+}

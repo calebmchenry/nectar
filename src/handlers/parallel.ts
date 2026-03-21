@@ -84,7 +84,7 @@ export class ParallelHandler implements NodeHandler {
     };
 
     const contextUpdates: Record<string, string> = {
-      [`parallel.results.${input.node.id}`]: serializeParallelResults(parallelResults)
+      'parallel.results': serializeParallelResults(parallelResults)
     };
 
     this.onEvent?.({
@@ -272,6 +272,15 @@ export class ParallelHandler implements NodeHandler {
         continue;
       }
       visited.add(current);
+
+      // Do not traverse through other parallel (fan-out) nodes.
+      // In cyclic graphs, BFS can escape through loop-back edges and reach
+      // a fan-in node that belongs to an outer or earlier parallel group,
+      // causing the wrong convergence target to be selected.
+      const node = this.graph.nodeMap.get(current);
+      if (node && node.kind === 'parallel' && current !== fromId) {
+        continue;
+      }
 
       const edges = this.graph.outgoing.get(current) ?? [];
       for (const edge of edges) {

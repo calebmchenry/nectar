@@ -1,0 +1,16 @@
+digraph ModularRelease {
+  graph [label="Modular Release Flow"]
+
+  start [shape=Mdiamond, label="Start"]
+  review_loop [
+    shape=component
+    label="Review Loop"
+    "compose.dotfile"="lib/review-loop.dot"
+  ]
+  ship [shape=parallelogram, label="Ship", tool_command="echo shipping"]
+  done [shape=Msquare, label="Done"]
+
+  start -> review_loop
+  review_loop -> ship
+  ship -> done
+}

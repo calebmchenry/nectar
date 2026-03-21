@@ -1,0 +1,8 @@
+digraph OutsideWorkspaceParent {
+  start [shape=Mdiamond]
+  outside [shape=component, "compose.dotfile"="../outside.dot"]
+  done [shape=Msquare]
+
+  start -> outside
+  outside -> done
+}

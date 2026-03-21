@@ -1,0 +1,8 @@
+digraph Mid {
+  m_start [shape=Mdiamond]
+  leaf_module [shape=component, "compose.dotfile"="nested-leaf.dot"]
+  m_exit [shape=Msquare]
+
+  m_start -> leaf_module
+  leaf_module -> m_exit
+}

@@ -1,0 +1,35 @@
+digraph PlanAndExecute {
+    graph [
+        goal="Generate a project plan and execute the first task",
+        label="Plan and Execute Pipeline"
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+
+    plan [
+        shape=box,
+        label="Generate Plan",
+        prompt="You are a project planner. Given the goal: $goal\n\nCreate a simple 3-step plan to accomplish this goal. Format each step as a numbered list."
+    ]
+
+    check [
+        shape=diamond,
+        label="Check Plan Quality"
+    ]
+
+    execute [
+        shape=box,
+        label="Execute First Step",
+        prompt="You are a task executor. The project goal is: $goal\n\nExecute the first step of the plan. Describe what you would do in detail.",
+        goal_gate="true",
+        retry_target="plan"
+    ]
+
+    done [shape=Msquare, label="Complete"]
+
+    start -> plan
+    plan -> check
+    check -> execute [condition="outcome=success"]
+    check -> done [label="Fallback"]
+    execute -> done
+}

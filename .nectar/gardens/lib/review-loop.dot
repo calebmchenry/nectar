@@ -1,0 +1,15 @@
+digraph ReviewLoop {
+  graph [
+    goal="Run a reusable review loop"
+    default_max_retries="1"
+  ]
+
+  start [shape=Mdiamond, label="Start Review"]
+  draft [shape=parallelogram, label="Draft", tool_command="echo drafting"]
+  critique [shape=parallelogram, label="Critique", tool_command="echo critiquing"]
+  done [shape=Msquare, label="Review Done"]
+
+  start -> draft
+  draft -> critique
+  critique -> done
+}

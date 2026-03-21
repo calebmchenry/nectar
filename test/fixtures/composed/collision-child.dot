@@ -1,0 +1,8 @@
+digraph CollisionChild {
+  start [shape=Mdiamond]
+  work [shape=box, prompt="child work"]
+  done [shape=Msquare]
+
+  start -> work
+  work -> done
+}

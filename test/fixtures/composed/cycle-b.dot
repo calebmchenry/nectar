@@ -1,0 +1,8 @@
+digraph CycleB {
+  b_start [shape=Mdiamond]
+  loop [shape=component, "compose.dotfile"="cycle-a.dot"]
+  b_exit [shape=Msquare]
+
+  b_start -> loop
+  loop -> b_exit
+}

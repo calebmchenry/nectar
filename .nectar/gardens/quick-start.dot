@@ -1,0 +1,13 @@
+digraph QuickStart {
+  graph [
+    goal="Show a minimal Nectar garden that runs locally without API keys.",
+    label="Nectar Quick Start"
+  ]
+
+  start [shape=Mdiamond, label="Start"]
+  hello [shape=parallelogram, label="Say Hello", script="echo 'Hello from Nectar'"]
+  done [shape=Msquare, label="Done"]
+
+  start -> hello
+  hello -> done
+}

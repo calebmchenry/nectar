@@ -1,0 +1,9 @@
+digraph CollisionParent {
+  start [shape=Mdiamond]
+  "dup__start" [shape=parallelogram, script="echo existing"]
+  dup [shape=component, "compose.dotfile"="collision-child.dot", "compose.prefix"="dup"]
+  done [shape=Msquare]
+
+  start -> dup
+  dup -> done
+}

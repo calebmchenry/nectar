@@ -1,0 +1,10 @@
+digraph RetryPresets {
+  graph [default_retry_policy="standard"]
+
+  start [shape=Mdiamond]
+  unstable [shape=parallelogram, script="echo unstable", retry_policy="patient"]
+  done [shape=Msquare]
+
+  start -> unstable
+  unstable -> done
+}
