@@ -4,6 +4,41 @@ export interface ModelInfo {
   id: string;
   provider: string;
   display_name: string;
+  knowledge_cutoff?: string;
+  context_window: number;
+  max_output_tokens: number;
+  supports_streaming: boolean;
+  supports_tools: boolean;
+  supports_structured_output: boolean;
+  supports_vision: boolean;
+  supports_reasoning: boolean;
+  input_cost_per_million?: number;
+  output_cost_per_million?: number;
+  cache_read_cost_per_million?: number;
+  // Compatibility aliases for one sprint.
+  capabilities: {
+    streaming: boolean;
+    tool_calling: boolean;
+    structured_output: boolean;
+    vision: boolean;
+    thinking: boolean;
+  };
+  // Compatibility aliases for one sprint.
+  cost?: {
+    input_per_million: number;
+    output_per_million: number;
+    cache_read_per_million?: number;
+  };
+  aliases: string[];
+  release_date: string;
+  deprecated: boolean;
+}
+
+interface RawModelInfo {
+  id: string;
+  provider: string;
+  display_name: string;
+  knowledge_cutoff?: string;
   context_window: number;
   max_output_tokens: number;
   capabilities: {
@@ -23,14 +58,23 @@ export interface ModelInfo {
   deprecated: boolean;
 }
 
+type CapabilitySelector =
+  | keyof ModelInfo['capabilities']
+  | 'supports_streaming'
+  | 'supports_tools'
+  | 'supports_structured_output'
+  | 'supports_vision'
+  | 'supports_reasoning';
+
 // ── Static catalog ──────────────────────────────────────────────────────────
 
-const CATALOG: ModelInfo[] = [
+const CATALOG: RawModelInfo[] = [
   // ── Anthropic ─────────────────────────────────────────────────────────────
   {
     id: 'claude-opus-4-20250514',
     provider: 'anthropic',
     display_name: 'Claude Opus 4',
+    knowledge_cutoff: '2025-01',
     context_window: 200_000,
     max_output_tokens: 32_768,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: true },
@@ -43,6 +87,7 @@ const CATALOG: ModelInfo[] = [
     id: 'claude-sonnet-4-20250514',
     provider: 'anthropic',
     display_name: 'Claude Sonnet 4',
+    knowledge_cutoff: '2025-01',
     context_window: 200_000,
     max_output_tokens: 16_384,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: true },
@@ -55,6 +100,7 @@ const CATALOG: ModelInfo[] = [
     id: 'claude-sonnet-4-5-20250514',
     provider: 'anthropic',
     display_name: 'Claude Sonnet 4.5',
+    knowledge_cutoff: '2025-01',
     context_window: 200_000,
     max_output_tokens: 16_384,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: true },
@@ -67,6 +113,7 @@ const CATALOG: ModelInfo[] = [
     id: 'claude-haiku-4-5-20251001',
     provider: 'anthropic',
     display_name: 'Claude Haiku 4.5',
+    knowledge_cutoff: '2025-01',
     context_window: 200_000,
     max_output_tokens: 8_192,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: false },
@@ -81,6 +128,7 @@ const CATALOG: ModelInfo[] = [
     id: 'o3',
     provider: 'openai',
     display_name: 'O3',
+    knowledge_cutoff: '2024-06',
     context_window: 200_000,
     max_output_tokens: 100_000,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: true },
@@ -93,6 +141,7 @@ const CATALOG: ModelInfo[] = [
     id: 'o3-mini',
     provider: 'openai',
     display_name: 'O3 Mini',
+    knowledge_cutoff: '2024-06',
     context_window: 200_000,
     max_output_tokens: 100_000,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: false, thinking: true },
@@ -105,6 +154,7 @@ const CATALOG: ModelInfo[] = [
     id: 'o4-mini',
     provider: 'openai',
     display_name: 'O4 Mini',
+    knowledge_cutoff: '2024-06',
     context_window: 200_000,
     max_output_tokens: 100_000,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: true },
@@ -117,6 +167,7 @@ const CATALOG: ModelInfo[] = [
     id: 'gpt-4.1',
     provider: 'openai',
     display_name: 'GPT-4.1',
+    knowledge_cutoff: '2024-06',
     context_window: 1_000_000,
     max_output_tokens: 32_768,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: false },
@@ -129,6 +180,7 @@ const CATALOG: ModelInfo[] = [
     id: 'gpt-4.1-mini',
     provider: 'openai',
     display_name: 'GPT-4.1 Mini',
+    knowledge_cutoff: '2024-06',
     context_window: 1_000_000,
     max_output_tokens: 32_768,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: false },
@@ -141,6 +193,7 @@ const CATALOG: ModelInfo[] = [
     id: 'gpt-4.1-nano',
     provider: 'openai',
     display_name: 'GPT-4.1 Nano',
+    knowledge_cutoff: '2024-06',
     context_window: 1_000_000,
     max_output_tokens: 32_768,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: false },
@@ -153,6 +206,7 @@ const CATALOG: ModelInfo[] = [
     id: 'gpt-4o',
     provider: 'openai',
     display_name: 'GPT-4o (Legacy)',
+    knowledge_cutoff: '2023-10',
     context_window: 128_000,
     max_output_tokens: 16_384,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: false },
@@ -167,6 +221,7 @@ const CATALOG: ModelInfo[] = [
     id: 'gemini-2.5-pro',
     provider: 'gemini',
     display_name: 'Gemini 2.5 Pro',
+    knowledge_cutoff: '2025-01',
     context_window: 1_000_000,
     max_output_tokens: 65_536,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: true },
@@ -179,12 +234,46 @@ const CATALOG: ModelInfo[] = [
     id: 'gemini-2.5-flash',
     provider: 'gemini',
     display_name: 'Gemini 2.5 Flash',
+    knowledge_cutoff: '2025-01',
     context_window: 1_000_000,
     max_output_tokens: 65_536,
     capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: true, thinking: true },
     cost: { input_per_million: 0.15, output_per_million: 0.6 },
     aliases: ['gemini-flash', 'gemini-2.5-flash-preview-04-17'],
     release_date: '2025-04-17',
+    deprecated: false,
+  },
+  {
+    id: 'ollama/llama3.2',
+    provider: 'openai_compatible',
+    display_name: 'Ollama Llama 3.2',
+    context_window: 128_000,
+    max_output_tokens: 8_192,
+    capabilities: { streaming: true, tool_calling: true, structured_output: false, vision: false, thinking: false },
+    aliases: ['ollama-llama3.2', 'llama3.2'],
+    release_date: '2025-01-01',
+    deprecated: false,
+  },
+  {
+    id: 'together/meta-llama/Llama-3.3-70B-Instruct-Turbo',
+    provider: 'openai_compatible',
+    display_name: 'Together Llama 3.3 70B Turbo',
+    context_window: 131_072,
+    max_output_tokens: 8_192,
+    capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: false, thinking: false },
+    aliases: ['together-llama-3.3-70b', 'llama-3.3-70b-turbo'],
+    release_date: '2025-02-01',
+    deprecated: false,
+  },
+  {
+    id: 'groq/llama-3.3-70b-versatile',
+    provider: 'openai_compatible',
+    display_name: 'Groq Llama 3.3 70B Versatile',
+    context_window: 131_072,
+    max_output_tokens: 8_192,
+    capabilities: { streaming: true, tool_calling: true, structured_output: true, vision: false, thinking: false },
+    aliases: ['groq-llama-3.3-70b', 'llama-3.3-70b-versatile'],
+    release_date: '2025-02-01',
     deprecated: false,
   },
 ];
@@ -207,7 +296,56 @@ const SELECTORS: Record<string, Record<string, string>> = {
     fast: 'gemini-2.5-flash',
     reasoning: 'gemini-2.5-pro',
   },
+  openai_compatible: {
+    default: 'groq/llama-3.3-70b-versatile',
+    fast: 'ollama/llama3.2',
+    reasoning: 'together/meta-llama/Llama-3.3-70B-Instruct-Turbo',
+  },
 };
+
+function toModelInfo(raw: RawModelInfo): ModelInfo {
+  return {
+    ...raw,
+    supports_streaming: raw.capabilities.streaming,
+    supports_tools: raw.capabilities.tool_calling,
+    supports_structured_output: raw.capabilities.structured_output,
+    supports_vision: raw.capabilities.vision,
+    supports_reasoning: raw.capabilities.thinking,
+    input_cost_per_million: raw.cost?.input_per_million,
+    output_cost_per_million: raw.cost?.output_per_million,
+    cache_read_cost_per_million: raw.cost?.cache_read_per_million,
+    capabilities: { ...raw.capabilities },
+    cost: raw.cost ? { ...raw.cost } : undefined,
+    aliases: [...raw.aliases],
+  };
+}
+
+function supportsCapability(model: ModelInfo, capability: CapabilitySelector): boolean {
+  switch (capability) {
+    case 'streaming':
+      return model.capabilities.streaming;
+    case 'tool_calling':
+      return model.capabilities.tool_calling;
+    case 'structured_output':
+      return model.capabilities.structured_output;
+    case 'vision':
+      return model.capabilities.vision;
+    case 'thinking':
+      return model.capabilities.thinking;
+    case 'supports_streaming':
+      return model.supports_streaming;
+    case 'supports_tools':
+      return model.supports_tools;
+    case 'supports_structured_output':
+      return model.supports_structured_output;
+    case 'supports_vision':
+      return model.supports_vision;
+    case 'supports_reasoning':
+      return model.supports_reasoning;
+    default:
+      return false;
+  }
+}
 
 // ── Lookup functions ────────────────────────────────────────────────────────
 
@@ -219,10 +357,11 @@ export function getModelInfo(id: string, provider?: string): ModelInfo | undefin
 
   // Exact ID match first
   const exact = pool.find(m => m.id === id);
-  if (exact) return exact;
+  if (exact) return toModelInfo(exact);
 
   // Alias match
-  return pool.find(m => m.aliases.includes(id));
+  const alias = pool.find(m => m.aliases.includes(id));
+  return alias ? toModelInfo(alias) : undefined;
 }
 
 /**
@@ -234,7 +373,9 @@ export function listModels(provider?: string): ModelInfo[] {
   if (provider) {
     models = models.filter(m => m.provider === provider);
   }
-  return models.sort((a, b) => b.release_date.localeCompare(a.release_date));
+  return models
+    .sort((a, b) => b.release_date.localeCompare(a.release_date))
+    .map(toModelInfo);
 }
 
 /**
@@ -243,11 +384,13 @@ export function listModels(provider?: string): ModelInfo[] {
  */
 export function getLatestModel(
   provider: string,
-  capability?: keyof ModelInfo['capabilities']
+  capability?: CapabilitySelector
 ): ModelInfo | undefined {
-  let models = CATALOG.filter(m => m.provider === provider && !m.deprecated);
+  let models = CATALOG
+    .filter(m => m.provider === provider && !m.deprecated)
+    .map(toModelInfo);
   if (capability) {
-    models = models.filter(m => m.capabilities[capability]);
+    models = models.filter(m => supportsCapability(m, capability));
   }
   if (models.length === 0) return undefined;
   return models.sort((a, b) => b.release_date.localeCompare(a.release_date))[0];

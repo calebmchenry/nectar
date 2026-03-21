@@ -80,7 +80,7 @@ describe('ParallelHandler', () => {
     const outcome = await handler.execute(input);
     expect(outcome.status).toBe('success');
     expect(outcome.context_updates).toBeDefined();
-    expect(outcome.context_updates!['parallel.results.fan_out']).toBeDefined();
+    expect(outcome.context_updates!['parallel.results']).toBeDefined();
 
     // Check events
     const parallelStarted = events.find((e) => e.type === 'parallel_started');

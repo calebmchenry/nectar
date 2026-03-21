@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Answer, Question } from '../interviewer/types.js';
+import { normalizeAnswer, type Answer, type Question } from '../interviewer/types.js';
 import type { StoredQuestionResource } from './types.js';
 
 interface PendingResolution {
@@ -64,7 +64,7 @@ export class QuestionStore {
 
   async submitAnswer(
     questionId: string,
-    selectedLabel: string,
+    input: string | (Partial<Answer> & { selected_label?: string; selected_option?: number | string; text?: string }),
     source: Answer['source'] = 'user'
   ): Promise<StoredQuestionResource> {
     const record = await this.readQuestion(questionId);
@@ -89,21 +89,23 @@ export class QuestionStore {
       clearTimeout(resolution.timeout);
     }
 
+    const answerInput = typeof input === 'string'
+      ? { selected_label: input, source }
+      : { ...input, source: input.source ?? source };
+    const normalizedAnswer = normalizeAnswer(toQuestion(record), answerInput, answerInput.source);
+
     const now = new Date().toISOString();
     const answered: StoredQuestionResource = {
       ...record,
       status: 'answered',
       updated_at: now,
       answered_at: now,
-      answer: {
-        selected_label: selectedLabel,
-        source,
-      },
+      answer: normalizedAnswer,
     };
     await this.writeQuestion(answered);
 
     this.pending.delete(questionId);
-    resolution.resolve(answered.answer!);
+    resolution.resolve(normalizedAnswer);
     return answered;
   }
 
@@ -178,25 +180,24 @@ export class QuestionStore {
     }
 
     const now = new Date().toISOString();
+    const timedOutAnswer = defaultChoice
+      ? normalizeAnswer(
+          toQuestion(record),
+          { selected_label: defaultChoice, source: 'timeout' },
+          'timeout',
+        )
+      : undefined;
     const timedOut: StoredQuestionResource = {
       ...record,
       status: 'timed_out',
       updated_at: now,
-      answer: defaultChoice
-        ? {
-            selected_label: defaultChoice,
-            source: 'timeout',
-          }
-        : undefined,
+      answer: timedOutAnswer,
     };
     await this.writeQuestion(timedOut);
 
     this.pending.delete(questionId);
-    if (defaultChoice) {
-      resolution.resolve({
-        selected_label: defaultChoice,
-        source: 'timeout',
-      });
+    if (timedOutAnswer) {
+      resolution.resolve(timedOutAnswer);
       return;
     }
 
@@ -240,3 +241,20 @@ export class QuestionStore {
 }
 
 export type StoredQuestion = StoredQuestionResource;
+
+function toQuestion(resource: StoredQuestionResource): Question {
+  return {
+    id: resource.question_id,
+    type: resource.choices.length > 0 ? 'MULTIPLE_CHOICE' : 'FREEFORM',
+    text: resource.text,
+    choices: resource.choices.map((choice) => ({
+      label: choice.label,
+      accelerator: choice.accelerator,
+      edge_target: choice.edge_target ?? '',
+    })),
+    default_choice: resource.default_choice,
+    timeout_ms: resource.timeout_ms,
+    node_id: resource.node_id,
+    run_id: resource.run_id,
+  };
+}

@@ -49,6 +49,8 @@ describe('WaitHumanHandler', () => {
     expect(outcome.status).toBe('success');
     expect(outcome.preferred_label).toBe('[R] Reject');
     expect(outcome.suggested_next).toEqual(['abort']);
+    expect(outcome.context_updates?.['human.gate.selected']).toBe('1');
+    expect(outcome.context_updates?.['human.gate.label']).toBe('[R] Reject');
   });
 
   it('detects YES_NO question type for yes/no choices', async () => {
@@ -119,14 +121,16 @@ describe('WaitHumanHandler', () => {
     expect(outcome.preferred_label).toBe('Reject');
   });
 
-  it('returns failure when queue exhausted', async () => {
+  it('returns SKIPPED success when queue is exhausted', async () => {
     const interviewer = new QueueInterviewer([]);
     const handler = new WaitHumanHandler(interviewer);
 
     const edges = [makeEdge('Go', 'next')];
     const outcome = await handler.execute(makeInput(makeNode(), edges));
 
-    expect(outcome.status).toBe('failure');
-    expect(outcome.error_message).toMatch(/queue exhausted/);
+    expect(outcome.status).toBe('success');
+    expect(outcome.preferred_label).toBe('SKIPPED');
+    expect(outcome.context_updates?.['human.gate.selected']).toBe('SKIPPED');
+    expect(outcome.context_updates?.['human.gate.label']).toBe('SKIPPED');
   });
 });

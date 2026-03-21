@@ -133,6 +133,10 @@ export class StreamAccumulator {
     return this.buildResponse(this.streamEnded);
   }
 
+  hasStreamEnd(): boolean {
+    return this.streamEnded;
+  }
+
   private buildResponse(final: boolean): GenerateResponse {
     if (final && this.explicitResponse) {
       return this.explicitResponse;

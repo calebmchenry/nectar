@@ -1,11 +1,14 @@
 import { GardenEdge } from '../garden/types.js';
-import { evaluateConditionExpression } from './conditions.js';
+import { ConditionScope, evaluateConditionExpression } from './conditions.js';
 import { NodeOutcome } from './types.js';
 
 export interface EdgeSelectionInput {
   edges: GardenEdge[];
   outcome: NodeOutcome;
   context: Record<string, string>;
+  preferred_label?: string;
+  steps?: Record<string, { status: string; output?: string }>;
+  artifacts?: ConditionScope['artifacts'];
 }
 
 export function selectNextEdge(input: EdgeSelectionInput): GardenEdge | null {
@@ -13,7 +16,7 @@ export function selectNextEdge(input: EdgeSelectionInput): GardenEdge | null {
     return null;
   }
 
-  let candidates = applyConditionStep(input.edges, input.outcome, input.context);
+  let candidates = applyConditionStep(input.edges, input);
   if (candidates.length === 1) {
     return candidates[0] ?? null;
   }
@@ -43,17 +46,22 @@ export function selectNextEdge(input: EdgeSelectionInput): GardenEdge | null {
   return candidates.slice().sort((a, b) => a.target.localeCompare(b.target))[0] ?? null;
 }
 
-function applyConditionStep(edges: GardenEdge[], outcome: NodeOutcome, context: Record<string, string>): GardenEdge[] {
+function applyConditionStep(edges: GardenEdge[], input: EdgeSelectionInput): GardenEdge[] {
+  const scope: ConditionScope = {
+    outcome: input.outcome.status,
+    preferred_label: input.preferred_label ?? input.outcome.preferred_label,
+    context: input.context,
+    steps: input.steps,
+    artifacts: input.artifacts,
+  };
+
   const conditionMatches = edges.filter((edge) => {
     if (!edge.condition) {
       return false;
     }
 
     try {
-      return evaluateConditionExpression(edge.condition, {
-        outcome: outcome.status,
-        context
-      });
+      return evaluateConditionExpression(edge.condition, scope);
     } catch {
       return false;
     }

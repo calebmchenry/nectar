@@ -32,6 +32,9 @@ describe('ToolHandler', () => {
 
     expect(outcome.status).toBe('success');
     expect(outcome.stdout).toContain('run-123');
+    expect(outcome.context_updates?.['tool.output']).toContain('run-123');
+    expect(outcome.context_updates?.['tool.exit_code']).toBe('0');
+    expect(outcome.context_updates?.['tool.stderr']).toBeUndefined();
   });
 
   it('returns failure for non-zero exit codes', async () => {
@@ -65,5 +68,26 @@ describe('ToolHandler', () => {
 
     expect(outcome.status).toBe('failure');
     expect(outcome.timed_out).toBe(true);
+  });
+
+  it('prefers tool_command over script when both are present', async () => {
+    const handler = new ToolHandler();
+    const outcome = await handler.execute({
+      node: toolNode({
+        attributes: {
+          tool_command: 'node -e "console.log(\'tool-command\')"',
+          script: 'node -e "console.log(\'legacy-script\')"',
+        },
+      }),
+      run_id: 'run-123',
+      dot_file: 'garden.dot',
+      attempt: 1,
+      run_dir: '/tmp/nectar-test',
+      context: {},
+    });
+
+    expect(outcome.status).toBe('success');
+    expect(outcome.stdout).toContain('tool-command');
+    expect(outcome.stdout).not.toContain('legacy-script');
   });
 });

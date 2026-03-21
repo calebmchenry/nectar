@@ -18,4 +18,16 @@ export class RecordingInterviewer implements Interviewer {
       throw error;
     }
   }
+
+  async ask_multiple(questions: Question[]): Promise<Answer[]> {
+    const answers: Answer[] = [];
+    for (const question of questions) {
+      answers.push(await this.ask(question));
+    }
+    return answers;
+  }
+
+  inform(message: string, stage: string): Promise<void> | void {
+    return this.inner.inform(message, stage);
+  }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeContent, getTextContent } from '../../src/llm/types.js';
+import { normalizeContent, getTextContent, ContentKind } from '../../src/llm/types.js';
 import type { ContentPart, Message, Usage, StopReason } from '../../src/llm/types.js';
 
 describe('normalizeContent', () => {
@@ -33,18 +33,20 @@ describe('getTextContent', () => {
 });
 
 describe('ContentPart type narrowing', () => {
-  it('supports all 6 variants', () => {
+  it('supports all content variants', () => {
     const parts: ContentPart[] = [
       { type: 'text', text: 'hi' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
+      { type: 'audio', source: { media_type: 'audio/mpeg', data: 'SUQz' } },
+      { type: 'document', source: { media_type: 'application/pdf', data: 'JVBERi0xLjQK', file_name: 'report.pdf' } },
       { type: 'tool_call', id: '1', name: 'fn', arguments: '{}' },
       { type: 'tool_result', tool_call_id: '1', content: 'result' },
       { type: 'thinking', thinking: 'hmm' },
       { type: 'redacted_thinking' }
     ];
-    expect(parts).toHaveLength(6);
+    expect(parts).toHaveLength(8);
     expect(parts[0]!.type).toBe('text');
-    expect(parts[5]!.type).toBe('redacted_thinking');
+    expect(parts[7]!.type).toBe('redacted_thinking');
   });
 });
 
@@ -59,9 +61,9 @@ describe('Message', () => {
     expect(Array.isArray(msg.content)).toBe(true);
   });
 
-  it('supports all 4 roles', () => {
-    const roles: Message['role'][] = ['system', 'user', 'assistant', 'tool'];
-    expect(roles).toHaveLength(4);
+  it('supports all 5 roles', () => {
+    const roles: Message['role'][] = ['system', 'user', 'assistant', 'tool', 'developer'];
+    expect(roles).toHaveLength(5);
   });
 });
 
@@ -70,12 +72,14 @@ describe('Usage', () => {
     const usage: Usage = {
       input_tokens: 100,
       output_tokens: 50,
+      total_tokens: 150,
       reasoning_tokens: 10,
       cache_read_tokens: 5,
       cache_write_tokens: 2
     };
     expect(usage.reasoning_tokens).toBe(10);
     expect(usage.cache_read_tokens).toBe(5);
+    expect(usage.total_tokens).toBe(150);
   });
 });
 
@@ -83,5 +87,12 @@ describe('StopReason', () => {
   it('includes all 4 values', () => {
     const reasons: StopReason[] = ['end_turn', 'max_tokens', 'stop_sequence', 'tool_use'];
     expect(reasons).toHaveLength(4);
+  });
+});
+
+describe('ContentKind', () => {
+  it('includes AUDIO and DOCUMENT', () => {
+    expect(ContentKind.AUDIO).toBe('audio');
+    expect(ContentKind.DOCUMENT).toBe('document');
   });
 });

@@ -1,9 +1,9 @@
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stringify as yamlStringify, parse as yamlParse } from 'yaml';
-import { SeedMeta, SeedPriority, SeedStatus, isValidStatus } from './types.js';
+import { parseSeedMarkdown, renderSeedMarkdown } from './markdown.js';
+import { AnalysisStatus, MAX_LINKED_RUNS, SeedMeta, SeedPriority, SeedStatus, isValidStatus } from './types.js';
 import { WorkspacePaths, allocateDirectory, slugify } from './paths.js';
-import { renderSeedMarkdown } from './markdown.js';
 
 export interface CreateSeedOptions {
   title?: string;
@@ -12,7 +12,21 @@ export interface CreateSeedOptions {
   tags?: string[];
 }
 
+export interface SeedPatchOptions {
+  title?: string;
+  body?: string;
+  status?: SeedStatus;
+  priority?: SeedPriority;
+  tags?: string[];
+  analysis_status?: Record<string, AnalysisStatus>;
+  linked_gardens_add?: string[];
+  linked_gardens_remove?: string[];
+  linked_runs_add?: string[];
+}
+
 export class SeedStore {
+  private readonly patchChains = new Map<number, Promise<unknown>>();
+
   constructor(readonly ws: WorkspacePaths) {}
 
   async create(opts: CreateSeedOptions): Promise<SeedMeta> {
@@ -49,6 +63,7 @@ export class SeedStore {
     const markdown = renderSeedMarkdown(title, opts.body);
     await writeFile(path.join(dirPath, 'seed.md'), markdown, 'utf8');
     await atomicWriteYaml(path.join(dirPath, 'meta.yaml'), meta);
+    await writeFile(path.join(dirPath, 'activity.jsonl'), '', 'utf8');
 
     return meta;
   }
@@ -108,42 +123,91 @@ export class SeedStore {
   }
 
   async updateMeta(id: number, updates: Partial<Pick<SeedMeta, 'status' | 'priority' | 'tags'>>): Promise<SeedMeta> {
-    const existing = await this.get(id);
-    if (!existing) {
-      throw new Error(`Seed ${id} not found.`);
-    }
+    return this.patch(id, updates);
+  }
 
-    const meta: SeedMeta = {
-      ...existing.meta,
-      ...updates,
-      updated_at: new Date().toISOString(),
-    };
-
-    await atomicWriteYaml(path.join(existing.dirPath, 'meta.yaml'), meta);
-
-    // Handle archive boundary moves
-    const oldStatus = existing.meta.status;
-    const newStatus = meta.status;
-    if (oldStatus !== newStatus) {
-      const isNowHoney = newStatus === 'honey';
-      const wasHoney = oldStatus === 'honey';
-
-      if (isNowHoney && !existing.dirPath.startsWith(this.ws.honey)) {
-        // Move to honey/
-        const dirName = path.basename(existing.dirPath);
-        const dest = path.join(this.ws.honey, dirName);
-        await mkdir(this.ws.honey, { recursive: true });
-        await rename(existing.dirPath, dest);
-      } else if (wasHoney && !isNowHoney && existing.dirPath.startsWith(this.ws.honey)) {
-        // Move back to seedbed/
-        const dirName = path.basename(existing.dirPath);
-        const dest = path.join(this.ws.seedbed, dirName);
-        await mkdir(this.ws.seedbed, { recursive: true });
-        await rename(existing.dirPath, dest);
+  async patch(id: number, updates: SeedPatchOptions): Promise<SeedMeta> {
+    return this.queuePatch(id, async () => {
+      const existing = await this.get(id);
+      if (!existing) {
+        throw new Error(`Seed ${id} not found.`);
       }
-    }
 
-    return meta;
+      const nextMeta: SeedMeta = {
+        ...existing.meta,
+        updated_at: new Date().toISOString(),
+        linked_gardens: [...(existing.meta.linked_gardens ?? [])],
+        linked_runs: normalizeLinkedRuns(existing.meta.linked_runs ?? []),
+      };
+
+      if (updates.status !== undefined) {
+        nextMeta.status = updates.status;
+      }
+      if (updates.priority !== undefined) {
+        nextMeta.priority = updates.priority;
+      }
+      if (updates.tags !== undefined) {
+        nextMeta.tags = normalizeTags(updates.tags);
+      }
+      if (updates.analysis_status !== undefined) {
+        nextMeta.analysis_status = {
+          ...existing.meta.analysis_status,
+          ...updates.analysis_status,
+        };
+      }
+      if (updates.linked_gardens_add !== undefined || updates.linked_gardens_remove !== undefined) {
+        const linkedGardens = [...nextMeta.linked_gardens];
+        if (updates.linked_gardens_add) {
+          for (const rawPath of updates.linked_gardens_add) {
+            const normalizedPath = normalizeGardenLink(rawPath, this.ws.root);
+            if (!linkedGardens.includes(normalizedPath)) {
+              linkedGardens.push(normalizedPath);
+            }
+          }
+        }
+        if (updates.linked_gardens_remove) {
+          const removals = new Set(
+            updates.linked_gardens_remove.map((rawPath) => normalizeGardenLink(rawPath, this.ws.root))
+          );
+          nextMeta.linked_gardens = linkedGardens.filter((linked) => !removals.has(linked));
+        } else {
+          nextMeta.linked_gardens = linkedGardens;
+        }
+      }
+      if (updates.linked_runs_add) {
+        for (const rawRunId of updates.linked_runs_add) {
+          const runId = rawRunId.trim();
+          if (!runId) {
+            continue;
+          }
+          nextMeta.linked_runs = [runId, ...nextMeta.linked_runs.filter((existingRunId) => existingRunId !== runId)];
+        }
+        nextMeta.linked_runs = nextMeta.linked_runs.slice(0, MAX_LINKED_RUNS);
+      }
+
+      let nextSeedMd = existing.seedMd;
+      if (updates.title !== undefined || updates.body !== undefined) {
+        const parsed = parseSeedMarkdown(existing.seedMd);
+        const title =
+          updates.title !== undefined
+            ? normalizeTitle(updates.title)
+            : parsed.title || existing.meta.title;
+        const body = updates.body !== undefined ? updates.body.trim() : parsed.body;
+        nextMeta.title = title;
+        nextSeedMd = renderSeedMarkdown(title, body, parsed.attachments_section);
+      }
+
+      const metaPath = path.join(existing.dirPath, 'meta.yaml');
+      const seedPath = path.join(existing.dirPath, 'seed.md');
+
+      if (nextSeedMd !== existing.seedMd) {
+        await atomicWriteText(seedPath, nextSeedMd);
+      }
+      await atomicWriteYaml(metaPath, nextMeta);
+
+      await this.reconcileArchiveBoundary(existing.dirPath, existing.meta.status, nextMeta.status);
+      return nextMeta;
+    });
   }
 
   private async findEntry(id: number): Promise<{ dirPath: string } | null> {
@@ -185,6 +249,48 @@ export class SeedStore {
 
     return null;
   }
+
+  private async reconcileArchiveBoundary(
+    dirPath: string,
+    previousStatus: SeedStatus,
+    nextStatus: SeedStatus
+  ): Promise<void> {
+    if (previousStatus === nextStatus) {
+      return;
+    }
+
+    const isNowHoney = nextStatus === 'honey';
+    const wasHoney = previousStatus === 'honey';
+
+    if (isNowHoney && !dirPath.startsWith(this.ws.honey)) {
+      const dirName = path.basename(dirPath);
+      const destination = path.join(this.ws.honey, dirName);
+      await mkdir(this.ws.honey, { recursive: true });
+      await rename(dirPath, destination);
+      return;
+    }
+
+    if (wasHoney && !isNowHoney && dirPath.startsWith(this.ws.honey)) {
+      const dirName = path.basename(dirPath);
+      const destination = path.join(this.ws.seedbed, dirName);
+      await mkdir(this.ws.seedbed, { recursive: true });
+      await rename(dirPath, destination);
+    }
+  }
+
+  private queuePatch<T>(id: number, task: () => Promise<T>): Promise<T> {
+    const previous = this.patchChains.get(id) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(task);
+
+    this.patchChains.set(id, current);
+    return current.finally(() => {
+      if (this.patchChains.get(id) === current) {
+        this.patchChains.delete(id);
+      }
+    });
+  }
 }
 
 function deriveTitle(body: string): string {
@@ -193,10 +299,68 @@ function deriveTitle(body: string): string {
 }
 
 async function atomicWriteYaml(filePath: string, data: SeedMeta): Promise<void> {
+  await atomicWriteText(filePath, yamlStringify(data));
+}
+
+async function atomicWriteText(filePath: string, content: string): Promise<void> {
   const tmpPath = filePath + '.tmp';
-  const content = yamlStringify(data);
   await writeFile(tmpPath, content, 'utf8');
   await rename(tmpPath, filePath);
+}
+
+function normalizeTitle(title: string): string {
+  const normalized = title.trim();
+  if (!normalized) {
+    throw new Error('Seed title cannot be empty.');
+  }
+  return normalized;
+}
+
+function normalizeTags(tags: string[]): string[] {
+  return tags
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+}
+
+function normalizeLinkedRuns(runIds: string[]): string[] {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawRunId of runIds) {
+    const runId = rawRunId.trim();
+    if (!runId || seen.has(runId)) {
+      continue;
+    }
+    seen.add(runId);
+    deduped.push(runId);
+    if (deduped.length >= MAX_LINKED_RUNS) {
+      break;
+    }
+  }
+
+  return deduped;
+}
+
+function normalizeGardenLink(rawPath: string, workspaceRoot: string): string {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    throw new Error('Garden link path must not be empty.');
+  }
+
+  const absolute = path.resolve(workspaceRoot, trimmed);
+  const relative = path.relative(workspaceRoot, absolute);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Garden link path '${rawPath}' resolves outside workspace root.`);
+  }
+
+  const normalized = relative.split(path.sep).join('/');
+  if (!normalized.startsWith('gardens/')) {
+    throw new Error(`Garden link path '${rawPath}' must be inside gardens/.`);
+  }
+  if (!normalized.endsWith('.dot')) {
+    throw new Error(`Garden link path '${rawPath}' must end with .dot.`);
+  }
+  return normalized;
 }
 
 export function isSeedStatusValid(value: string): value is SeedStatus {

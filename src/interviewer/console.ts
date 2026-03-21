@@ -1,12 +1,12 @@
 import { createInterface } from 'node:readline';
-import { Answer, Interviewer, Question } from './types.js';
+import { Answer, Interviewer, Question, askSequentially, normalizeAnswer } from './types.js';
 
 export class ConsoleInterviewer implements Interviewer {
   async ask(question: Question): Promise<Answer> {
     // Non-TTY guard: select default_choice or fail immediately
     if (!process.stdin.isTTY) {
       if (question.default_choice) {
-        return { selected_label: question.default_choice, source: 'auto' };
+        return normalizeAnswer(question, { selected_label: question.default_choice, source: 'auto' }, 'auto');
       }
       throw new Error('Human input required but no TTY available.');
     }
@@ -43,7 +43,7 @@ export class ConsoleInterviewer implements Interviewer {
         timeoutId = setTimeout(() => {
           if (resolved) return;
           if (question.default_choice) {
-            finish({ selected_label: question.default_choice, source: 'timeout' });
+            finish(normalizeAnswer(question, { selected_label: question.default_choice, source: 'timeout' }, 'timeout'));
           } else {
             resolved = true;
             cleanup();
@@ -60,11 +60,20 @@ export class ConsoleInterviewer implements Interviewer {
         const input = line.trim();
         if (!input) return;
 
+        if (question.type === 'FREEFORM' || choices.length === 0) {
+          finish(normalizeAnswer(question, { selected_label: input, text: input, source: 'user' }, 'user'));
+          return;
+        }
+
         // Try matching by number
         const num = parseInt(input, 10);
         if (!isNaN(num) && num >= 1 && num <= choices.length) {
           const choice = choices[num - 1]!;
-          finish({ selected_label: choice.label, source: 'user' });
+          finish(normalizeAnswer(
+            question,
+            { selected_label: choice.label, selected_option: num - 1, source: 'user' },
+            'user',
+          ));
           return;
         }
 
@@ -72,14 +81,22 @@ export class ConsoleInterviewer implements Interviewer {
         const upperInput = input.toUpperCase();
         const accelMatch = choices.find((c) => c.accelerator && c.accelerator.toUpperCase() === upperInput);
         if (accelMatch) {
-          finish({ selected_label: accelMatch.label, source: 'user' });
+          finish(normalizeAnswer(
+            question,
+            { selected_label: accelMatch.label, selected_option: choices.indexOf(accelMatch), source: 'user' },
+            'user',
+          ));
           return;
         }
 
         // Try matching by full label (case-insensitive)
         const labelMatch = choices.find((c) => c.label.toLowerCase() === input.toLowerCase());
         if (labelMatch) {
-          finish({ selected_label: labelMatch.label, source: 'user' });
+          finish(normalizeAnswer(
+            question,
+            { selected_label: labelMatch.label, selected_option: choices.indexOf(labelMatch), source: 'user' },
+            'user',
+          ));
           return;
         }
 
@@ -91,13 +108,21 @@ export class ConsoleInterviewer implements Interviewer {
         if (!resolved) {
           resolved = true;
           if (question.default_choice) {
-            resolve({ selected_label: question.default_choice, source: 'auto' });
+            resolve(normalizeAnswer(question, { selected_label: question.default_choice, source: 'auto' }, 'auto'));
           } else {
             reject(new Error('stdin closed before a choice was made.'));
           }
         }
       });
     });
+  }
+
+  ask_multiple(questions: Question[]): Promise<Answer[]> {
+    return askSequentially(this, questions);
+  }
+
+  inform(message: string, stage: string): void {
+    process.stderr.write(`[${stage}] ${message}\n`);
   }
 
   private buildPrompt(question: Question): string {

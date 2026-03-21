@@ -1,11 +1,14 @@
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { parse as yamlParse } from 'yaml';
+import { createProgram } from '../../src/cli/index.js';
+import { RunStore } from '../../src/checkpoint/run-store.js';
 import { SeedStore } from '../../src/seedbed/store.js';
 import { workspacePathsFromRoot, WorkspacePaths } from '../../src/seedbed/paths.js';
 import { checkConsistency } from '../../src/seedbed/consistency.js';
+import type { Cocoon } from '../../src/checkpoint/types.js';
 
 let tmpDir: string;
 let ws: WorkspacePaths;
@@ -15,11 +18,65 @@ beforeEach(async () => {
   ws = workspacePathsFromRoot(tmpDir);
   await mkdir(ws.seedbed, { recursive: true });
   await mkdir(ws.honey, { recursive: true });
+  await mkdir(path.join(tmpDir, 'gardens'), { recursive: true });
 });
 
 afterEach(async () => {
   await rm(tmpDir, { recursive: true, force: true });
 });
+
+function captureOutput() {
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  const stdoutWrite = process.stdout.write.bind(process.stdout);
+  const stderrWrite = process.stderr.write.bind(process.stderr);
+
+  (process.stdout.write as unknown as (chunk: string) => boolean) = ((chunk: string) => {
+    stdoutChunks.push(String(chunk));
+    return true;
+  }) as unknown as typeof process.stdout.write;
+
+  (process.stderr.write as unknown as (chunk: string) => boolean) = ((chunk: string) => {
+    stderrChunks.push(String(chunk));
+    return true;
+  }) as unknown as typeof process.stderr.write;
+
+  return {
+    restore() {
+      process.stdout.write = stdoutWrite;
+      process.stderr.write = stderrWrite;
+    },
+    stdout() {
+      return stdoutChunks.join('');
+    },
+    stderr() {
+      return stderrChunks.join('');
+    },
+  };
+}
+
+async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const originalCwd = process.cwd();
+  const originalExitCode = process.exitCode;
+  process.chdir(tmpDir);
+  process.exitCode = 0;
+
+  const capture = captureOutput();
+  try {
+    await createProgram().parseAsync(args, { from: 'user' });
+  } finally {
+    capture.restore();
+    process.chdir(originalCwd);
+  }
+
+  const exitCode = process.exitCode ?? 0;
+  process.exitCode = originalExitCode;
+  return {
+    stdout: capture.stdout(),
+    stderr: capture.stderr(),
+    exitCode,
+  };
+}
 
 describe('seed CLI end-to-end', () => {
   it('creates a seed and inspects it', async () => {
@@ -116,7 +173,68 @@ describe('seed CLI end-to-end', () => {
     const seedEntries = await readdir(ws.seedbed);
     const seedDir = path.join(ws.seedbed, seedEntries[0]!);
     const files = await readdir(seedDir);
-    expect(files.sort()).toEqual(['analysis', 'attachments', 'meta.yaml', 'seed.md']);
+    expect(files.sort()).toEqual(['activity.jsonl', 'analysis', 'attachments', 'meta.yaml', 'seed.md']);
+  });
+
+  it('links and unlinks gardens from the CLI without server mode', async () => {
+    const store = new SeedStore(ws);
+    await store.create({ body: 'Link garden from CLI' });
+    await writeFile(path.join(tmpDir, 'gardens', 'example.dot'), 'digraph Example { start [shape=Mdiamond] done [shape=Msquare] start -> done }', 'utf8');
+
+    const linked = await runCli(['seed', 'link', '1', 'gardens/example.dot']);
+    expect(linked.exitCode).toBe(0);
+    const afterLink = await store.get(1);
+    expect(afterLink?.meta.linked_gardens).toEqual(['gardens/example.dot']);
+
+    const unlinked = await runCli(['seed', 'unlink', '1', 'gardens/example.dot']);
+    expect(unlinked.exitCode).toBe(0);
+    const afterUnlink = await store.get(1);
+    expect(afterUnlink?.meta.linked_gardens).toEqual([]);
+  });
+
+  it('seed show includes linked gardens, runs, and status suggestion', async () => {
+    const store = new SeedStore(ws);
+    await store.create({ body: 'Show linked run details' });
+    await writeFile(path.join(tmpDir, 'gardens', 'example.dot'), 'digraph Example { start [shape=Mdiamond] done [shape=Msquare] start -> done }', 'utf8');
+    await store.patch(1, { linked_gardens_add: ['gardens/example.dot'] });
+
+    const runId = 'seed-run-show';
+    const startedAt = new Date().toISOString();
+    const runStore = new RunStore(runId, tmpDir);
+    await runStore.initialize({
+      run_id: runId,
+      dot_file: 'gardens/example.dot',
+      graph_hash: 'show-hash',
+      started_at: startedAt,
+      workspace_root: tmpDir,
+      seed_id: 1,
+      seed_dir: 'seedbed/001-show-linked-run-details',
+      seed_garden: 'gardens/example.dot',
+      launch_origin: 'seed_cli',
+    });
+    const completedCheckpoint: Cocoon = {
+      version: 1,
+      run_id: runId,
+      dot_file: 'gardens/example.dot',
+      graph_hash: 'show-hash',
+      started_at: startedAt,
+      updated_at: startedAt,
+      status: 'completed',
+      interruption_reason: undefined,
+      completed_nodes: [],
+      current_node: undefined,
+      context: {},
+      retry_state: {},
+    };
+    await runStore.writeCheckpoint(completedCheckpoint);
+    await store.patch(1, { linked_runs_add: [runId] });
+
+    const shown = await runCli(['seed', 'show', '1']);
+    expect(shown.exitCode).toBe(0);
+    expect(shown.stdout).toContain('Linked Gardens: 1');
+    expect(shown.stdout).toContain('Linked Runs: 1');
+    expect(shown.stdout).toContain(runId);
+    expect(shown.stdout).toContain('Status suggestion: honey');
   });
 
   it('handles multiple seeds with archive moves', async () => {

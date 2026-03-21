@@ -46,6 +46,11 @@ describe('Agent session event metadata', () => {
 
     await session.processInput('hello');
 
+    expect(events.some((e) => e.type === 'agent_user_input')).toBe(true);
+    expect(events.some((e) => e.type === 'agent_assistant_text_start')).toBe(true);
+    expect(events.some((e) => e.type === 'agent_assistant_text_end')).toBe(true);
+    expect(events.some((e) => e.type === 'agent_processing_ended')).toBe(true);
+
     const completed = events.find(e => e.type === 'agent_session_completed');
     expect(completed).toBeDefined();
     expect(completed!.type).toBe('agent_session_completed');
@@ -77,6 +82,8 @@ describe('Agent session event metadata', () => {
 
     await session.processInput('read test.txt');
 
+    const outputDelta = events.find((e) => e.type === 'agent_tool_call_output_delta');
+    expect(outputDelta).toBeDefined();
     const toolCompleted = events.find(e => e.type === 'agent_tool_call_completed');
     expect(toolCompleted).toBeDefined();
     if (toolCompleted?.type === 'agent_tool_call_completed') {
@@ -84,6 +91,45 @@ describe('Agent session event metadata', () => {
       expect(typeof toolCompleted.content_preview).toBe('string');
       // Not truncated for small output
       expect(toolCompleted.truncated).toBe(false);
+    }
+  });
+
+  it('emits agent_steering_injected when queued steering is drained', async () => {
+    const workspace = await createWorkspace();
+    const events: AgentEvent[] = [];
+
+    const adapter = new ScriptedAdapter([
+      { tool_calls: [{ id: 'tc1', name: 'slow_tool', arguments: {} }] },
+      { text: 'done' },
+    ]);
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+    const registry = new ToolRegistry();
+    registry.register(
+      'slow_tool',
+      'Slow tool',
+      { properties: {} },
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return 'ok';
+      },
+    );
+
+    const session = new AgentSession(
+      client, registry, new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      { max_turns: 12, max_tool_rounds_per_input: 10, default_command_timeout_ms: 10_000, workspace_root: workspace },
+      { onEvent: (e) => events.push(e) }
+    );
+
+    const pending = session.submit('hello');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    session.steer('Be concise');
+    await pending;
+
+    const injected = events.find((event) => event.type === 'agent_steering_injected');
+    expect(injected?.type).toBe('agent_steering_injected');
+    if (injected?.type === 'agent_steering_injected') {
+      expect(injected.message).toContain('Be concise');
     }
   });
 });

@@ -13,28 +13,31 @@ afterEach(async () => {
 });
 
 describe('buildEnvironmentContext', () => {
-  it('includes platform and workspace', () => {
-    const result = buildEnvironmentContext({
+  it('includes required environment fields', async () => {
+    const result = await buildEnvironmentContext({
       workspaceRoot: '/tmp/test',
       provider: 'openai',
       model: 'gpt-4o',
       visibleToolNames: ['read_file', 'shell'],
     });
 
+    expect(result).toContain('Working directory: /tmp/test');
+    expect(result).toContain('Is git repository:');
+    expect(result).toContain('Git branch:');
     expect(result).toContain('Platform:');
-    expect(result).toContain('/tmp/test');
-    expect(result).toContain('openai');
-    expect(result).toContain('gpt-4o');
-    expect(result).toContain('read_file, shell');
-    expect(result).toContain('Date:');
+    expect(result).toContain('OS version:');
+    expect(result).toContain(`Today's date:`);
+    expect(result).toContain('Model: gpt-4o');
+    expect(result).toContain('Knowledge cutoff:');
+    expect(result).toContain('Tools: read_file, shell');
   });
 
-  it('works without optional fields', () => {
-    const result = buildEnvironmentContext({ workspaceRoot: '/tmp/test' });
-    expect(result).toContain('/tmp/test');
-    expect(result).not.toContain('Provider:');
-    expect(result).not.toContain('Model:');
-    expect(result).not.toContain('Tools:');
+  it('renders unknown knowledge cutoff when model is not in catalog', async () => {
+    const result = await buildEnvironmentContext({
+      workspaceRoot: '/tmp/test',
+      model: 'model-that-does-not-exist',
+    });
+    expect(result).toContain('Knowledge cutoff: unknown');
   });
 });
 

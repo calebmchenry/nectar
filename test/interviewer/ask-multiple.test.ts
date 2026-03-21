@@ -3,7 +3,7 @@ import { AutoApproveInterviewer } from '../../src/interviewer/auto-approve.js';
 import { CallbackInterviewer } from '../../src/interviewer/callback.js';
 import { QueueInterviewer } from '../../src/interviewer/queue.js';
 import { RecordingInterviewer } from '../../src/interviewer/recording.js';
-import { Question } from '../../src/interviewer/types.js';
+import { AnswerValue, Question } from '../../src/interviewer/types.js';
 
 function question(id: string, label = 'Pick'): Question {
   return {
@@ -33,10 +33,16 @@ describe('Interviewer.ask_multiple', () => {
   it('QueueInterviewer returns SKIPPED when answers are exhausted mid-batch', async () => {
     const queue = new QueueInterviewer([{ selected_label: 'Beta', source: 'queue' }]);
     const answers = await queue.ask_multiple([question('q1'), question('q2')]);
-    expect(answers).toEqual([
-      { selected_label: 'Beta', source: 'queue' },
-      { selected_label: 'SKIPPED', source: 'queue_exhausted' },
-    ]);
+    expect(answers[0]).toMatchObject({
+      selected_label: 'Beta',
+      source: 'queue',
+      selected_option: 1,
+    });
+    expect(answers[1]).toMatchObject({
+      selected_label: 'SKIPPED',
+      source: 'queue_exhausted',
+      answer_value: AnswerValue.SKIPPED,
+    });
   });
 
   it('AutoApproveInterviewer resolves all questions', async () => {

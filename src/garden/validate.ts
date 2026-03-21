@@ -1,4 +1,6 @@
-import { evaluateConditionExpression, validateConditionExpression } from '../engine/conditions.js';
+import { evaluateConditionAst, parseConditionAst } from '../engine/conditions.js';
+import { collectVariableReferences, ConditionExpr } from '../engine/condition-parser.js';
+import { getRetryPreset, listRetryPresetNames } from '../engine/retry.js';
 import {
   Diagnostic,
   GardenEdge,
@@ -9,6 +11,11 @@ import {
 } from './types.js';
 import { parseStylesheet } from './stylesheet.js';
 import { parseTimeoutMs } from './parse.js';
+
+const EMPTY_ARTIFACT_SCOPE = {
+  has: (_key: string) => false,
+  get: (_key: string) => undefined as string | undefined,
+};
 
 export function validateGarden(graph: GardenGraph): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
@@ -35,24 +42,26 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
       severity: 'error',
       code: 'DUPLICATE_NODE_ID',
       message: `Duplicate node id '${duplicateId}'.`,
-      file: graph.dotPath,
+      file: duplicateNode?.provenance?.dotPath ?? graph.dotPath,
       location: duplicateNode?.location
     });
   }
 
   const startNodes = graph.nodes.filter((node) => node.kind === 'start');
-  if (startNodes.length !== 1) {
+  const rootStartNodes = startNodes.filter((node) => !node.provenance);
+  if (rootStartNodes.length !== 1) {
     diagnostics.push({
       severity: 'error',
       code: 'START_NODE_COUNT',
-      message: `Expected exactly one start node (Mdiamond), found ${startNodes.length}.`,
+      message: `Expected exactly one start node (Mdiamond), found ${rootStartNodes.length}.`,
       file: graph.dotPath,
-      location: startNodes[0]?.location
+      location: rootStartNodes[0]?.location
     });
   }
 
   const exitNodes = graph.nodes.filter((node) => node.kind === 'exit');
-  if (exitNodes.length < 1) {
+  const rootExitNodes = exitNodes.filter((node) => !node.provenance);
+  if (rootExitNodes.length < 1) {
     diagnostics.push({
       severity: 'error',
       code: 'MISSING_EXIT',
@@ -62,7 +71,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
   }
 
   // start_no_incoming: start nodes must have no incoming edges
-  for (const startNode of startNodes) {
+  for (const startNode of rootStartNodes) {
     const incoming = graph.incoming.get(startNode.id) ?? [];
     if (incoming.length > 0) {
       diagnostics.push({
@@ -76,7 +85,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
   }
 
   // exit_no_outgoing: exit nodes must have no outgoing edges
-  for (const exitNode of exitNodes) {
+  for (const exitNode of rootExitNodes) {
     const outgoing = graph.outgoing.get(exitNode.id) ?? [];
     if (outgoing.length > 0) {
       diagnostics.push({
@@ -90,18 +99,34 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
   }
 
   for (const node of graph.nodes) {
+    const nodeFile = node.provenance?.dotPath ?? graph.dotPath;
     validateNodeShape(graph, node, diagnostics);
     validateNodeRetries(graph, node, diagnostics);
+    validateNodeRetryPolicy(graph, node, diagnostics);
 
     if (node.kind === 'tool') {
+      const explicitToolCommand = node.attributes.tool_command?.trim();
       const script = node.attributes.script?.trim();
-      if (!script) {
+      const toolCommand = node.toolCommand ?? explicitToolCommand;
+      if (!toolCommand && !script) {
         diagnostics.push({
           severity: 'error',
           code: 'TOOL_SCRIPT_REQUIRED',
-          message: `Tool node '${node.id}' must define a non-empty script attribute.`,
-          file: graph.dotPath,
-          location: node.location
+          message: `Tool node '${node.id}' must define a non-empty tool_command (or legacy script) attribute.`,
+          file: nodeFile,
+          location: node.location,
+          node_id: node.id,
+          fix: `Set ${node.id} [tool_command="echo hello"] (or add legacy script).`,
+        });
+      } else if ((node.toolCommandFromScript || !explicitToolCommand) && script) {
+        diagnostics.push({
+          severity: 'info',
+          code: 'TOOL_SCRIPT_DEPRECATED',
+          message: `Tool node '${node.id}' uses deprecated script attribute. Prefer tool_command.`,
+          file: nodeFile,
+          location: node.location,
+          node_id: node.id,
+          fix: `Replace script=... with tool_command=... on node '${node.id}'.`,
         });
       }
     }
@@ -112,8 +137,10 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
         severity: 'warning',
         code: 'TYPE_UNKNOWN',
         message: `Node '${node.id}' has unrecognized type (shape='${node.shape ?? '<missing>'}').`,
-        file: graph.dotPath,
-        location: node.location
+        file: nodeFile,
+        location: node.location,
+        node_id: node.id,
+        fix: `Use a supported shape or set type override (start, exit, tool).`,
       });
     }
 
@@ -129,7 +156,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'FIDELITY_INVALID',
           message: `Node '${node.id}' has invalid fidelity '${fidelity}'. Expected one of: full, truncate, compact, summary:low, summary:medium, summary:high.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -141,8 +168,10 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
         severity: 'warning',
         code: 'RETRY_TARGET_MISSING',
         message: `Node '${node.id}' has retry_target '${node.retryTarget}' which does not exist in the graph.`,
-        file: graph.dotPath,
-        location: node.location
+        file: nodeFile,
+        location: node.location,
+        node_id: node.id,
+        fix: `Create node '${node.retryTarget}' or update retry_target on '${node.id}'.`,
       });
     }
     if (node.fallbackRetryTarget && !graph.nodeMap.has(node.fallbackRetryTarget)) {
@@ -150,8 +179,10 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
         severity: 'warning',
         code: 'RETRY_TARGET_MISSING',
         message: `Node '${node.id}' has fallback_retry_target '${node.fallbackRetryTarget}' which does not exist in the graph.`,
-        file: graph.dotPath,
-        location: node.location
+        file: nodeFile,
+        location: node.location,
+        node_id: node.id,
+        fix: `Create node '${node.fallbackRetryTarget}' or update fallback_retry_target on '${node.id}'.`,
       });
     }
 
@@ -163,8 +194,10 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'GOAL_GATE_NO_RETRY',
           message: `Goal gate node '${node.id}' has no retry_target defined (node-level or graph-level).`,
-          file: graph.dotPath,
-          location: node.location
+          file: nodeFile,
+          location: node.location,
+          node_id: node.id,
+          fix: `Set retry_target on '${node.id}' or graph-level retry_target/fallback_retry_target.`,
         });
       }
     }
@@ -177,7 +210,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'PARALLEL_HAS_OUTGOING',
           message: `Parallel node '${node.id}' (component shape) should have at least 2 outgoing edges, found ${outgoing.length}.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -191,7 +224,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'FAN_IN_TOPOLOGY',
           message: `Fan-in node '${node.id}' (tripleoctagon shape) has no upstream parallel (component) ancestor.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -206,7 +239,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'PARALLEL_HAS_FAN_IN',
           message: `Parallel node '${node.id}' (component shape) has no reachable fan-in (tripleoctagon) downstream.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -220,7 +253,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'error',
           code: 'INVALID_JOIN_POLICY',
           message: `Node '${node.id}' has invalid join_policy '${policy}'. Expected 'wait_all' or 'first_success'.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -235,7 +268,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'error',
           code: 'INVALID_MAX_PARALLEL',
           message: `Node '${node.id}' has invalid max_parallel '${raw}'. Expected a positive integer.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -249,7 +282,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'error',
           code: 'INVALID_REASONING_EFFORT',
           message: `Node '${node.id}' has invalid reasoning_effort '${node.reasoningEffort}'. Expected one of: low, medium, high.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -257,13 +290,13 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
 
     // llm_provider validation
     if (node.llmProvider !== undefined) {
-      const knownProviders = new Set(['anthropic', 'openai', 'gemini', 'simulation']);
+      const knownProviders = new Set(['anthropic', 'openai', 'openai_compatible', 'gemini', 'simulation']);
       if (!knownProviders.has(node.llmProvider)) {
         diagnostics.push({
           severity: 'warning',
           code: 'UNKNOWN_LLM_PROVIDER',
-          message: `Node '${node.id}' has unknown llm_provider '${node.llmProvider}'. Known providers: anthropic, openai, gemini, simulation.`,
-          file: graph.dotPath,
+          message: `Node '${node.id}' has unknown llm_provider '${node.llmProvider}'. Known providers: anthropic, openai, openai_compatible, gemini, simulation.`,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -275,8 +308,10 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
         severity: 'warning',
         code: 'PROMPT_MISSING',
         message: `LLM node '${node.id}' (box shape) has no prompt attribute defined.`,
-        file: graph.dotPath,
-        location: node.location
+        file: nodeFile,
+        location: node.location,
+        node_id: node.id,
+        fix: `Set ${node.id} [prompt="..."] with the task instruction.`,
       });
     }
 
@@ -291,7 +326,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
               severity: 'error',
               code: 'INVALID_MANAGER_ACTIONS',
               message: `Manager node '${node.id}' has invalid action '${action}'. Valid actions: observe, steer, wait.`,
-              file: graph.dotPath,
+              file: nodeFile,
               location: node.location
             });
           }
@@ -307,7 +342,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
             severity: 'error',
             code: 'INVALID_MANAGER_MAX_CYCLES',
             message: `Manager node '${node.id}' has invalid manager.max_cycles '${rawMaxCycles}'. Expected a positive integer.`,
-            file: graph.dotPath,
+            file: nodeFile,
             location: node.location
           });
         }
@@ -322,7 +357,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
             severity: 'error',
             code: 'INVALID_MANAGER_POLL_INTERVAL',
             message: `Manager node '${node.id}' has invalid manager.poll_interval '${rawPollInterval}'. Expected a duration (e.g. 5s, 1m).`,
-            file: graph.dotPath,
+            file: nodeFile,
             location: node.location
           });
         }
@@ -331,14 +366,27 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
       // manager.stop_condition must parse with condition evaluator
       if (node.managerStopCondition) {
         try {
-          validateConditionExpression(node.managerStopCondition);
+          const parsed = parseConditionAst(node.managerStopCondition);
+          evaluateConditionAst(parsed, {
+            outcome: 'success',
+            preferred_label: '',
+            context: {},
+            steps: {},
+            artifacts: EMPTY_ARTIFACT_SCOPE,
+          });
+          addUnknownStepReferenceWarnings(parsed, graph, diagnostics, {
+            expression: node.managerStopCondition,
+            file: nodeFile,
+            location: node.location,
+            contextLabel: `manager.stop_condition on node '${node.id}'`,
+          });
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown condition syntax error.';
           diagnostics.push({
             severity: 'error',
             code: 'INVALID_MANAGER_STOP_CONDITION',
             message: `Manager node '${node.id}' has invalid manager.stop_condition '${node.managerStopCondition}': ${message}`,
-            file: graph.dotPath,
+            file: nodeFile,
             location: node.location
           });
         }
@@ -350,7 +398,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'error',
           code: 'MANAGER_STEER_NO_PROMPT',
           message: `Manager node '${node.id}' has 'steer' action but no prompt attribute.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -361,7 +409,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'error',
           code: 'INVALID_MANAGER_POLL_INTERVAL',
           message: `Manager node '${node.id}' has manager.poll_interval less than minimum 1s.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -373,7 +421,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'error',
           code: 'MANAGER_MISSING_CHILD_DOTFILE',
           message: `Manager node '${node.id}' with child_autostart requires graph-level stack.child_dotfile.`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -386,7 +434,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'TOOL_HOOKS_NON_CODERGEN',
           message: `Node '${node.id}' has tool_hooks but is not a codergen node (no runtime effect).`,
-          file: graph.dotPath,
+          file: nodeFile,
           location: node.location
         });
       }
@@ -394,13 +442,20 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
   }
 
   for (const edge of graph.edges) {
+    const edgeFile = edge.provenance?.dotPath ?? graph.dotPath;
     if (!graph.nodeMap.has(edge.source)) {
       diagnostics.push({
         severity: 'error',
         code: 'UNKNOWN_EDGE_SOURCE',
         message: `Edge source '${edge.source}' does not reference an existing node.`,
-        file: graph.dotPath,
-        location: edge.location
+        file: edgeFile,
+        location: edge.location,
+        edge: {
+          source: edge.source,
+          target: edge.target,
+          label: edge.label,
+          condition: edge.condition,
+        },
       });
     }
 
@@ -409,23 +464,48 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
         severity: 'error',
         code: 'UNKNOWN_EDGE_TARGET',
         message: `Edge target '${edge.target}' does not reference an existing node.`,
-        file: graph.dotPath,
-        location: edge.location
+        file: edgeFile,
+        location: edge.location,
+        edge: {
+          source: edge.source,
+          target: edge.target,
+          label: edge.label,
+          condition: edge.condition,
+        },
       });
     }
 
     if (edge.condition) {
       try {
-        validateConditionExpression(edge.condition);
-        evaluateConditionExpression(edge.condition, { outcome: 'success', context: {} });
+        const parsed = parseConditionAst(edge.condition);
+        evaluateConditionAst(parsed, {
+          outcome: 'success',
+          preferred_label: '',
+          context: {},
+          steps: {},
+          artifacts: EMPTY_ARTIFACT_SCOPE,
+        });
+        addUnknownStepReferenceWarnings(parsed, graph, diagnostics, {
+          expression: edge.condition,
+          file: edgeFile,
+          location: edge.location,
+          contextLabel: `edge condition from '${edge.source}' to '${edge.target}'`,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown condition syntax error.';
         diagnostics.push({
           severity: 'error',
           code: 'INVALID_CONDITION',
           message: `Invalid edge condition '${edge.condition}': ${message}`,
-          file: graph.dotPath,
-          location: edge.location
+          file: edgeFile,
+          location: edge.location,
+          edge: {
+            source: edge.source,
+            target: edge.target,
+            label: edge.label,
+            condition: edge.condition,
+          },
+          fix: `Update the condition syntax or remove the condition from edge '${edge.source}' -> '${edge.target}'.`,
         });
       }
     }
@@ -438,8 +518,14 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'LOOP_RESTART_FROM_EXIT',
           message: `Edge from exit node '${edge.source}' has loop_restart=true, which is nonsensical.`,
-          file: graph.dotPath,
-          location: edge.location
+          file: edgeFile,
+          location: edge.location,
+          edge: {
+            source: edge.source,
+            target: edge.target,
+            label: edge.label,
+            condition: edge.condition,
+          },
         });
       }
       // Invalid target node
@@ -448,8 +534,15 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'error',
           code: 'LOOP_RESTART_INVALID_TARGET',
           message: `loop_restart edge target '${edge.target}' does not exist in the graph.`,
-          file: graph.dotPath,
-          location: edge.location
+          file: edgeFile,
+          location: edge.location,
+          edge: {
+            source: edge.source,
+            target: edge.target,
+            label: edge.label,
+            condition: edge.condition,
+          },
+          fix: `Create target node '${edge.target}' or point loop_restart to an existing node.`,
         });
       }
       // Unconditional loop_restart — likely infinite loop
@@ -458,36 +551,47 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           severity: 'warning',
           code: 'LOOP_RESTART_UNCONDITIONAL',
           message: `Edge from '${edge.source}' to '${edge.target}' has loop_restart=true but no condition (likely infinite loop).`,
-          file: graph.dotPath,
-          location: edge.location
+          file: edgeFile,
+          location: edge.location,
+          edge: {
+            source: edge.source,
+            target: edge.target,
+            label: edge.label,
+            condition: edge.condition,
+          },
+          fix: `Add a loop_restart condition or remove loop_restart=true on edge '${edge.source}' -> '${edge.target}'.`,
         });
       }
     }
   }
 
   // reachability: all nodes reachable from start via BFS
-  if (startNodes.length === 1 && startNodes[0]) {
-    const unreachable = findUnreachableNodes(graph, startNodes[0].id);
+  if (rootStartNodes.length === 1 && rootStartNodes[0]) {
+    const unreachable = findUnreachableNodes(graph, rootStartNodes[0].id);
     for (const node of unreachable) {
       diagnostics.push({
         severity: 'error',
         code: 'UNREACHABLE_NODE',
         message: `Node '${node.id}' is unreachable from the start node.`,
-        file: graph.dotPath,
-        location: node.location
+        file: node.provenance?.dotPath ?? graph.dotPath,
+        location: node.location,
+        node_id: node.id,
+        fix: `Add an incoming path to '${node.id}' from the start node or remove the node.`,
       });
     }
   }
 
-  const cyclesWithoutExitPath = findCyclesWithoutExitPath(graph, exitNodes.map((node) => node.id));
+  const cyclesWithoutExitPath = findCyclesWithoutExitPath(graph, rootExitNodes.map((node) => node.id));
   for (const cycleNodeId of cyclesWithoutExitPath) {
     const node = graph.nodeMap.get(cycleNodeId);
     diagnostics.push({
       severity: 'error',
       code: 'CYCLE_WITHOUT_EXIT',
       message: `Cycle containing node '${cycleNodeId}' cannot reach an exit node.`,
-      file: graph.dotPath,
-      location: node?.location
+      file: node?.provenance?.dotPath ?? graph.dotPath,
+      location: node?.location,
+      node_id: cycleNodeId,
+      fix: `Add an edge from the cycle to an exit node.`,
     });
   }
 
@@ -501,8 +605,10 @@ function validateNodeShape(graph: GardenGraph, node: GardenNode, diagnostics: Di
       severity: 'error',
       code: 'UNSUPPORTED_SHAPE',
       message: `Node '${node.id}' uses unsupported shape '${node.shape ?? '<missing>'}'. Supported shapes: Mdiamond, Msquare, parallelogram, box, diamond, hexagon, component, tripleoctagon, house.`,
-      file: graph.dotPath,
-      location: node.location
+      file: node.provenance?.dotPath ?? graph.dotPath,
+      location: node.location,
+      node_id: node.id,
+      fix: `Choose one of the supported shapes for node '${node.id}'.`,
     });
   }
 }
@@ -518,8 +624,10 @@ function validateNodeRetries(graph: GardenGraph, node: GardenNode, diagnostics: 
       severity: 'error',
       code: 'INVALID_MAX_RETRIES',
       message: `Node '${node.id}' has invalid max_retries '${rawRetries}'. Expected a non-negative integer.`,
-      file: graph.dotPath,
-      location: node.location
+      file: node.provenance?.dotPath ?? graph.dotPath,
+      location: node.location,
+      node_id: node.id,
+      fix: `Set max_retries to a non-negative integer (for example, max_retries="3").`,
     });
     return;
   }
@@ -530,10 +638,38 @@ function validateNodeRetries(graph: GardenGraph, node: GardenNode, diagnostics: 
       severity: 'error',
       code: 'INVALID_MAX_RETRIES',
       message: `Node '${node.id}' has invalid max_retries '${rawRetries}'. Expected a non-negative integer.`,
-      file: graph.dotPath,
-      location: node.location
+      file: node.provenance?.dotPath ?? graph.dotPath,
+      location: node.location,
+      node_id: node.id,
+      fix: `Set max_retries to 0 or greater.`,
     });
   }
+}
+
+function validateNodeRetryPolicy(graph: GardenGraph, node: GardenNode, diagnostics: Diagnostic[]): void {
+  const rawPolicy = node.attributes.retry_policy;
+  if (rawPolicy === undefined) {
+    return;
+  }
+
+  const policy = rawPolicy.trim().toLowerCase();
+  if (!policy) {
+    return;
+  }
+
+  if (getRetryPreset(policy)) {
+    return;
+  }
+
+  diagnostics.push({
+    severity: 'warning',
+    code: 'UNKNOWN_RETRY_POLICY',
+    message: `Node '${node.id}' has unknown retry_policy '${rawPolicy}'. Expected one of: ${listRetryPresetNames().join(', ')}.`,
+    file: node.provenance?.dotPath ?? graph.dotPath,
+    location: node.location,
+    node_id: node.id,
+    fix: `Use a known retry_policy (${listRetryPresetNames().join(', ')}).`,
+  });
 }
 
 function findDuplicateNodeIds(nodes: GardenNode[]): string[] {
@@ -759,4 +895,36 @@ function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
 
     return a.code.localeCompare(b.code);
   });
+}
+
+function addUnknownStepReferenceWarnings(
+  expression: ConditionExpr,
+  graph: GardenGraph,
+  diagnostics: Diagnostic[],
+  input: { expression: string; file: string; location?: { line: number; col: number }; contextLabel: string },
+): void {
+  const unknownNodeIds = new Set<string>();
+  for (const ref of collectVariableReferences(expression)) {
+    if (ref.path[0] !== 'steps' || ref.path.length < 3) {
+      continue;
+    }
+    const nodeId = ref.path[1];
+    const field = ref.path[2];
+    if (!nodeId || (field !== 'status' && field !== 'output')) {
+      continue;
+    }
+    if (!graph.nodeMap.has(nodeId)) {
+      unknownNodeIds.add(nodeId);
+    }
+  }
+
+  for (const nodeId of unknownNodeIds) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'UNKNOWN_STEP_REFERENCE',
+      message: `${input.contextLabel} references unknown step '${nodeId}' in '${input.expression}'.`,
+      file: input.file,
+      location: input.location,
+    });
+  }
 }

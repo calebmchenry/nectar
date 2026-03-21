@@ -147,6 +147,7 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
       const shape = mergedAttributes.shape;
       const type = mergedAttributes.type;
       const maxRetries = parseInteger(mergedAttributes.max_retries);
+      const retryPolicy = mergedAttributes.retry_policy?.trim() || undefined;
       const timeoutMs = parseTimeoutMs(mergedAttributes.timeout);
       const goalGate = mergedAttributes.goal_gate?.trim().toLowerCase() === 'true' ? true : undefined;
       const retryTarget = mergedAttributes.retry_target?.trim() || undefined;
@@ -162,6 +163,10 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
       const autoStatus = mergedAttributes.auto_status?.trim().toLowerCase() === 'true' ? true : undefined;
       const fidelity = mergedAttributes.fidelity?.trim() || undefined;
       const threadId = mergedAttributes.thread_id?.trim() || undefined;
+      const explicitToolCommand = mergedAttributes.tool_command?.trim();
+      const legacyScript = mergedAttributes.script?.trim();
+      const toolCommand = explicitToolCommand || legacyScript || undefined;
+      const toolCommandFromScript = !explicitToolCommand && Boolean(legacyScript);
       const managerPollIntervalMs = parseTimeoutMs(mergedAttributes['manager.poll_interval']);
       const managerMaxCycles = parseInteger(mergedAttributes['manager.max_cycles']);
       const managerStopCondition = mergedAttributes['manager.stop_condition']?.trim() || undefined;
@@ -193,6 +198,7 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
         type,
         kind: normalizeNodeKind(shape, type),
         maxRetries,
+        retryPolicy,
         timeoutMs,
         goalGate,
         retryTarget,
@@ -208,6 +214,8 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
         autoStatus,
         fidelity,
         threadId,
+        toolCommand,
+        toolCommandFromScript,
         managerPollIntervalMs,
         managerMaxCycles,
         managerStopCondition,
@@ -290,6 +298,7 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
 
   const defaultMaxRetries = parseInteger(graphAttributes.default_max_retries) ??
     parseInteger(graphAttributes.default_max_retry);
+  const defaultRetryPolicy = graphAttributes.default_retry_policy?.trim() || undefined;
 
   const defaultFidelity = graphAttributes.default_fidelity?.trim() || undefined;
   const modelStylesheet = graphAttributes.model_stylesheet?.trim() || undefined;
@@ -307,6 +316,7 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
     dotSource: source,
     graphAttributes,
     defaultMaxRetries,
+    defaultRetryPolicy,
     defaultFidelity,
     modelStylesheet,
     childDotfile,

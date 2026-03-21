@@ -130,6 +130,38 @@ describe('AgentSession subagent integration', () => {
     expect(spawnEvents.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('spawn_agent forwards model override to child sessions', async () => {
+    const workspace = await createWorkspace();
+    const events: AgentEvent[] = [];
+
+    const adapter = new ScriptedAdapter([
+      {
+        tool_calls: [{
+          id: 'tc1',
+          name: 'spawn_agent',
+          arguments: { task: 'read test.txt', model: 'gemini-2.5-flash' },
+        }],
+      },
+      { text: 'done' },
+    ]);
+
+    const session = makeSession(workspace, adapter, undefined, {
+      depth: 0,
+      onEvent: (e) => events.push(e),
+    });
+
+    const result = await session.submit('spawn a model-overridden child');
+    expect(result.status).toBe('success');
+
+    const completed = events.find(
+      (event) => event.type === 'agent_tool_call_completed' && (event as any).tool_name === 'spawn_agent'
+    );
+    expect(completed?.type).toBe('agent_tool_call_completed');
+    if (completed?.type === 'agent_tool_call_completed') {
+      expect(completed.content_preview).toContain('"model":"gemini-2.5-flash"');
+    }
+  });
+
   it('close_agent is handled gracefully', async () => {
     const workspace = await createWorkspace();
     const adapter = new ScriptedAdapter([

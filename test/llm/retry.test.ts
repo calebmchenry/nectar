@@ -5,9 +5,12 @@ import type { GenerateRequest, GenerateResponse } from '../../src/llm/types.js';
 import type { StreamEvent } from '../../src/llm/streaming.js';
 import {
   AuthenticationError,
+  QuotaExceededError,
   RateLimitError,
   OverloadedError,
-  NetworkError
+  NetworkError,
+  StreamError,
+  TimeoutError,
 } from '../../src/llm/errors.js';
 
 function mockAdapter(overrides: Partial<ProviderAdapter> = {}): ProviderAdapter {
@@ -91,6 +94,34 @@ describe('withRetry', () => {
     expect(adapter.generate).toHaveBeenCalledTimes(1);
   });
 
+  it('does NOT retry on QuotaExceededError', async () => {
+    const adapter = mockAdapter({
+      generate: vi.fn().mockRejectedValue(new QuotaExceededError('test'))
+    });
+
+    const wrapped = withRetry(adapter, { max_retries: 3, base_delay_ms: 1, max_delay_ms: 10, jitter: false });
+    await expect(wrapped.generate(dummyRequest)).rejects.toThrow(QuotaExceededError);
+    expect(adapter.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT retry stream on StreamError', async () => {
+    let callCount = 0;
+    const adapter = mockAdapter({
+      async *stream(): AsyncIterable<StreamEvent> {
+        callCount += 1;
+        throw new StreamError('test', { phase: 'transport' });
+      }
+    });
+
+    const wrapped = withRetry(adapter, { max_retries: 3, base_delay_ms: 1, max_delay_ms: 10, jitter: false });
+    await expect(async () => {
+      for await (const _event of wrapped.stream(dummyRequest)) {
+        // no-op
+      }
+    }).rejects.toThrow(StreamError);
+    expect(callCount).toBe(1);
+  });
+
   it('throws last error when max retries exhausted', async () => {
     const adapter = mockAdapter({
       generate: vi.fn().mockRejectedValue(new RateLimitError('test'))
@@ -99,6 +130,31 @@ describe('withRetry', () => {
     const wrapped = withRetry(adapter, { max_retries: 2, base_delay_ms: 1, max_delay_ms: 10, jitter: false });
     await expect(wrapped.generate(dummyRequest)).rejects.toThrow(RateLimitError);
     expect(adapter.generate).toHaveBeenCalledTimes(3); // initial + 2 retries
+  });
+
+  it('uses default max_retries=2 and base_delay_ms=1000', async () => {
+    vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const adapter = mockAdapter({
+        generate: vi.fn().mockRejectedValue(new RateLimitError('test'))
+      });
+
+      const wrapped = withRetry(adapter, { jitter: false });
+      const pendingAssertion = expect(wrapped.generate(dummyRequest)).rejects.toThrow(RateLimitError);
+      await vi.runAllTimersAsync();
+
+      await pendingAssertion;
+      expect(adapter.generate).toHaveBeenCalledTimes(3); // initial + 2 retries
+
+      const numericDelays = timeoutSpy.mock.calls
+        .map((call) => call[1])
+        .filter((value): value is number => typeof value === 'number');
+      expect(numericDelays).toEqual(expect.arrayContaining([1000, 2000]));
+    } finally {
+      timeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('respects Retry-After from RateLimitError', async () => {
@@ -116,6 +172,16 @@ describe('withRetry', () => {
     expect(elapsed).toBeGreaterThanOrEqual(40); // Allow some timing slack
   });
 
+  it('throws when Retry-After exceeds max_delay_ms', async () => {
+    const adapter = mockAdapter({
+      generate: vi.fn().mockRejectedValue(new RateLimitError('test', { retry_after_ms: 120 })),
+    });
+
+    const wrapped = withRetry(adapter, { max_retries: 3, base_delay_ms: 1, max_delay_ms: 30, jitter: false });
+    await expect(wrapped.generate(dummyRequest)).rejects.toThrow(RateLimitError);
+    expect(adapter.generate).toHaveBeenCalledTimes(1);
+  });
+
   it('abort cancels retry loop', async () => {
     const controller = new AbortController();
     const adapter = mockAdapter({
@@ -130,6 +196,23 @@ describe('withRetry', () => {
     await expect(
       wrapped.generate({ ...dummyRequest, abort_signal: controller.signal })
     ).rejects.toThrow();
+  });
+
+  it('respects total timeout budget across retries', async () => {
+    const adapter = mockAdapter({
+      generate: vi.fn().mockRejectedValue(new RateLimitError('test'))
+    });
+
+    const wrapped = withRetry(adapter, { max_retries: 5, base_delay_ms: 50, max_delay_ms: 50, jitter: false });
+    await expect(
+      wrapped.generate({
+        ...dummyRequest,
+        timeout: { request_ms: 20 },
+      })
+    ).rejects.toThrow(TimeoutError);
+
+    // Initial attempt runs, then retry budget check fails before sleeping.
+    expect(adapter.generate).toHaveBeenCalledTimes(1);
   });
 
   it('stream retries before first content delta', async () => {

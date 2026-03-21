@@ -84,6 +84,17 @@ describe('Provider profile tool exposure', () => {
     const profile = new GeminiProfile();
     expect(profile.visibleTools).toContain('edit_file');
     expect(profile.visibleTools).not.toContain('apply_patch');
+    expect(profile.visibleTools).toContain('read_many_files');
+    expect(profile.visibleTools).toContain('list_dir');
+  });
+
+  it('Gemini-only extended tools are absent from OpenAI and Anthropic profiles', () => {
+    const openai = new OpenAIProfile();
+    const anthropic = new AnthropicProfile();
+    expect(openai.visibleTools).not.toContain('read_many_files');
+    expect(openai.visibleTools).not.toContain('list_dir');
+    expect(anthropic.visibleTools).not.toContain('read_many_files');
+    expect(anthropic.visibleTools).not.toContain('list_dir');
   });
 
   it('registry.definitionsForProfile filters tools', () => {

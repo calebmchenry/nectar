@@ -15,26 +15,24 @@ describe('truncateForModel', () => {
   it('truncates with head/tail split and marker', () => {
     const text = 'A'.repeat(200);
     const result = truncateForModel(text, 100);
-    expect(result).toContain('[... truncated');
-    expect(result).toContain('characters ...');
-    // Head should be ~80 chars, tail ~20 chars
-    const headPart = result.split('\n\n[...')[0]!;
-    expect(headPart.length).toBe(80);
+    expect(result).toContain('[WARNING: Tool output was truncated.');
+    expect(result).toContain('characters were removed from the middle.');
+    expect(result).toContain('The full output is available in the event stream.');
+    const headPart = result.split('\n\n[WARNING:')[0]!;
+    expect(headPart.length).toBe(50);
   });
 
-  it('preserves head (80%) and tail (20%) proportions', () => {
+  it('preserves head/tail 50/50 proportions', () => {
     const text = 'H'.repeat(500) + 'T'.repeat(500);
     const result = truncateForModel(text, 200);
-    // Head: 160 chars of H, tail: 40 chars of T
-    expect(result.startsWith('H'.repeat(160))).toBe(true);
-    expect(result.endsWith('T'.repeat(40))).toBe(true);
+    expect(result.startsWith('H'.repeat(100))).toBe(true);
+    expect(result.endsWith('T'.repeat(100))).toBe(true);
   });
 
   it('includes omitted character count in marker', () => {
     const text = 'x'.repeat(1000);
     const result = truncateForModel(text, 200);
-    // 1000 - 160 (head) - 40 (tail) = 800 omitted
-    expect(result).toContain('truncated 800 characters');
+    expect(result).toContain('800 characters were removed from the middle');
   });
 
   it('handles empty string', () => {
@@ -43,6 +41,6 @@ describe('truncateForModel', () => {
 
   it('handles limit of 1', () => {
     const result = truncateForModel('abcdef', 1);
-    expect(result).toContain('truncated');
+    expect(result).toContain('Tool output was truncated');
   });
 });

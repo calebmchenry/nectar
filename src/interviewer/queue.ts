@@ -1,4 +1,4 @@
-import { Answer, Interviewer, Question } from './types.js';
+import { Answer, Interviewer, Question, askSequentially, normalizeAnswer } from './types.js';
 
 export class QueueInterviewer implements Interviewer {
   private readonly answers: Answer[];
@@ -8,12 +8,23 @@ export class QueueInterviewer implements Interviewer {
     this.answers = answers;
   }
 
-  async ask(_question: Question): Promise<Answer> {
+  async ask(question: Question): Promise<Answer> {
     if (this.index >= this.answers.length) {
-      throw new Error('QueueInterviewer: answer queue exhausted.');
+      return normalizeAnswer(question, {
+        selected_label: 'SKIPPED',
+        source: 'queue_exhausted',
+      }, 'queue_exhausted');
     }
     const answer = this.answers[this.index]!;
     this.index++;
-    return answer;
+    return normalizeAnswer(question, answer, answer.source);
+  }
+
+  ask_multiple(questions: Question[]): Promise<Answer[]> {
+    return askSequentially(this, questions);
+  }
+
+  inform(_message: string, _stage: string): void {
+    // no-op
   }
 }

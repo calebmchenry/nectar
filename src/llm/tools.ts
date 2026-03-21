@@ -1,15 +1,39 @@
 import { getToolSafety } from '../agent-loop/types.js';
 import type { ToolCallEnvelope, ToolResultEnvelope } from '../agent-loop/types.js';
+import type { Message } from './types.js';
+
+export interface ToolContext {
+  messages: Message[];
+  abort_signal?: AbortSignal;
+  tool_call_id: string;
+}
+
+export type ToolExecuteHandler = (
+  args: Record<string, unknown>,
+  context?: ToolContext,
+) => Promise<string>;
 
 export interface ToolDefinition {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  execute?: ToolExecuteHandler;
 }
 
 export interface ToolChoice {
   type: 'auto' | 'none' | 'required' | 'named';
   name?: string;
+}
+
+export type ActiveToolDefinition = ToolDefinition & { execute: ToolExecuteHandler };
+export type PassiveToolDefinition = ToolDefinition & { execute?: undefined };
+
+export function isActiveTool(tool: ToolDefinition): tool is ActiveToolDefinition {
+  return typeof tool.execute === 'function';
+}
+
+export function isPassiveTool(tool: ToolDefinition): tool is PassiveToolDefinition {
+  return !isActiveTool(tool);
 }
 
 /**

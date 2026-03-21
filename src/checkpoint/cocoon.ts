@@ -32,7 +32,15 @@ export async function readCocoon(runId: string, workspaceRoot = process.cwd()): 
   try {
     const raw = await readFile(targetPath, 'utf8');
     const parsed = JSON.parse(raw) as Cocoon;
-    return parsed;
+    return {
+      ...parsed,
+      interruption_reason: typeof (parsed as Cocoon & { interruption_reason?: unknown }).interruption_reason === 'string'
+        ? (parsed as Cocoon & { interruption_reason?: string }).interruption_reason
+        : undefined,
+      logs: Array.isArray((parsed as Cocoon & { logs?: unknown }).logs)
+        ? ((parsed as Cocoon & { logs?: unknown[] }).logs ?? []).filter((entry): entry is string => typeof entry === 'string')
+        : [],
+    };
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === 'ENOENT') {
@@ -86,7 +94,7 @@ export async function writeNodeAttemptLogs(
   stdout: string,
   stderr: string,
   workspaceRoot = process.cwd()
-): Promise<void> {
+): Promise<{ stdout_path: string; stderr_path: string }> {
   const baseDir = path.join(cocoonRoot(workspaceRoot), runId, nodeId);
   await mkdir(baseDir, { recursive: true });
 
@@ -95,6 +103,11 @@ export async function writeNodeAttemptLogs(
 
   await writeAtomicText(stdoutPath, stdout);
   await writeAtomicText(stderrPath, stderr);
+
+  return {
+    stdout_path: path.join(nodeId, `attempt-${attempt}.stdout.log`),
+    stderr_path: path.join(nodeId, `attempt-${attempt}.stderr.log`),
+  };
 }
 
 export async function ensureCocoonRoot(workspaceRoot = process.cwd()): Promise<void> {

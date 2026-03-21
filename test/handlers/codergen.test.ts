@@ -6,9 +6,11 @@ import { CodergenHandler } from '../../src/handlers/codergen.js';
 import { SimulationProvider } from '../../src/llm/simulation.js';
 import { UnifiedClient } from '../../src/llm/client.js';
 import { GardenNode } from '../../src/garden/types.js';
+import type { RunEvent } from '../../src/engine/events.js';
 import type { LLMClient, LLMRequest, LLMResponse } from '../../src/llm/types.js';
 import type { ProviderAdapter } from '../../src/llm/adapters/types.js';
 import { selectProfile } from '../../src/agent-loop/provider-profiles.js';
+import { ScriptedAdapter } from '../helpers/scripted-adapter.js';
 
 const tempDirs: string[] = [];
 
@@ -52,6 +54,9 @@ describe('CodergenHandler', () => {
 
       expect(outcome.status).toBe('success');
       expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates?.last_stage).toBe('llm_node');
+      expect(outcome.context_updates?.last_response).toBeDefined();
+      expect(outcome.context_updates?.last_response?.length).toBeLessThanOrEqual(200);
 
       const nodeDir = path.join(runDir, 'llm_node');
       const prompt = await readFile(path.join(nodeDir, 'prompt.md'), 'utf8');
@@ -149,6 +154,9 @@ describe('CodergenHandler', () => {
 
       expect(outcome.status).toBe('success');
       expect(outcome.context_updates).toBeDefined();
+      expect(outcome.context_updates?.last_stage).toBe('llm_node');
+      expect(outcome.context_updates?.last_response).toBeDefined();
+      expect(outcome.context_updates?.last_response?.length).toBeLessThanOrEqual(200);
 
       const nodeDir = path.join(runDir, 'llm_node');
       const response = await readFile(path.join(nodeDir, 'response.md'), 'utf8');
@@ -203,6 +211,37 @@ describe('CodergenHandler', () => {
       // The shared profile must not have been mutated
       const profileAfter = selectProfile('simulation');
       expect(profileAfter.defaultModel).toBe(originalModel);
+    });
+
+    it('bridges additive agent events into run events', async () => {
+      const runDir = await createTempDir();
+      const events: RunEvent[] = [];
+      const adapter = new ScriptedAdapter([
+        { tool_calls: [{ id: 'tc1', name: 'read_file', arguments: { path: 'README.md' } }] },
+        { text: 'done' },
+      ]);
+      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+      const handler = new CodergenHandler(client);
+
+      const outcome = await handler.execute({
+        node: codergenNode({
+          attributes: { llm_provider: 'simulation' },
+        }),
+        run_id: 'run-bridge',
+        dot_file: 'test.dot',
+        attempt: 1,
+        run_dir: runDir,
+        context: {},
+        emitEvent: (event) => events.push(event),
+      });
+
+      expect(outcome.status).toBe('success');
+      const types = events.map((event) => event.type);
+      expect(types).toContain('agent_user_input');
+      expect(types).toContain('agent_assistant_text_start');
+      expect(types).toContain('agent_assistant_text_end');
+      expect(types).toContain('agent_tool_call_output_delta');
+      expect(types).toContain('agent_processing_ended');
     });
   });
 });

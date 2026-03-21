@@ -38,7 +38,8 @@ function exampleCocoon(runId = 'run-1'): Cocoon {
     completed_nodes: [],
     current_node: 'start',
     context: {},
-    retry_state: {}
+    retry_state: {},
+    logs: [],
   };
 }
 

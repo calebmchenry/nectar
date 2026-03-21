@@ -3,6 +3,7 @@ import type { ToolHandler } from '../tool-registry.js';
 export const spawnAgentSchema = {
   properties: {
     task: { type: 'string', description: 'The task prompt for the child agent' },
+    model: { type: 'string', description: 'Optional model override for the child session' },
     working_dir: { type: 'string', description: 'Working directory for the child (default: parent\'s cwd)' },
     max_tool_rounds: { type: 'integer', description: 'Max tool rounds for the child (default: 20)' },
     timeout_ms: { type: 'integer', description: 'Timeout in ms for the child session (default: 300000 / 5 min)' },

@@ -3,10 +3,11 @@ import { AutoApproveInterviewer } from '../../src/interviewer/auto-approve.js';
 import { CallbackInterviewer } from '../../src/interviewer/callback.js';
 import { QueueInterviewer } from '../../src/interviewer/queue.js';
 import { RecordingInterviewer } from '../../src/interviewer/recording.js';
-import { Answer, Question, parseAccelerator } from '../../src/interviewer/types.js';
+import { Answer, AnswerValue, Question, parseAccelerator } from '../../src/interviewer/types.js';
 
 function makeQuestion(overrides: Partial<Question> = {}): Question {
   return {
+    id: 'q-1',
     type: 'MULTIPLE_CHOICE',
     text: 'Pick one',
     choices: [
@@ -34,9 +35,13 @@ describe('QueueInterviewer', () => {
     expect(a2.selected_label).toBe('Beta');
   });
 
-  it('throws when queue is exhausted', async () => {
+  it('returns SKIPPED when queue is exhausted', async () => {
     const queue = new QueueInterviewer([]);
-    await expect(queue.ask(makeQuestion())).rejects.toThrow(/queue exhausted/);
+    await expect(queue.ask(makeQuestion())).resolves.toMatchObject({
+      selected_label: 'SKIPPED',
+      source: 'queue_exhausted',
+      answer_value: AnswerValue.SKIPPED,
+    });
   });
 });
 
@@ -76,13 +81,15 @@ describe('RecordingInterviewer', () => {
     expect((recorder.recordings[0]![1] as Answer).selected_label).toBe('Alpha');
   });
 
-  it('records errors from wrapped interviewer', async () => {
+  it('records SKIPPED answer when wrapped queue is exhausted', async () => {
     const inner = new QueueInterviewer([]);
     const recorder = new RecordingInterviewer(inner);
 
-    await expect(recorder.ask(makeQuestion())).rejects.toThrow(/queue exhausted/);
+    const answer = await recorder.ask(makeQuestion());
+    expect(answer.selected_label).toBe('SKIPPED');
+    expect(answer.source).toBe('queue_exhausted');
     expect(recorder.recordings).toHaveLength(1);
-    expect(recorder.recordings[0]![1]).toBeInstanceOf(Error);
+    expect((recorder.recordings[0]![1] as Answer).selected_label).toBe('SKIPPED');
   });
 });
 

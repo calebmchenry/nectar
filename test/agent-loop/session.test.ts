@@ -14,6 +14,9 @@ import { ScriptedAdapter } from '../helpers/scripted-adapter.js';
 import { readFileHandler, readFileSchema, readFileDescription } from '../../src/agent-loop/tools/read-file.js';
 import { writeFileHandler, writeFileSchema, writeFileDescription } from '../../src/agent-loop/tools/write-file.js';
 import { editFileHandler, editFileSchema, editFileDescription } from '../../src/agent-loop/tools/edit-file.js';
+import { shellHandler, shellSchema, shellDescription } from '../../src/agent-loop/tools/shell.js';
+import type { ExecutionEnvironment } from '../../src/agent-loop/execution-environment.js';
+import type { StreamEvent } from '../../src/llm/streaming.js';
 
 const tempDirs: string[] = [];
 
@@ -31,6 +34,7 @@ async function createWorkspace(): Promise<string> {
 
 function makeConfig(workspace: string, overrides?: Partial<SessionConfig>): SessionConfig {
   return {
+    ...overrides,
     max_turns: overrides?.max_turns ?? 12,
     max_tool_rounds_per_input: overrides?.max_tool_rounds_per_input ?? 10,
     default_command_timeout_ms: overrides?.default_command_timeout_ms ?? 120_000,
@@ -245,9 +249,383 @@ describe('AgentSession', () => {
     await session.processInput('Read test.txt');
 
     const types = events.map((e) => e.type);
+    expect(types).toContain('agent_user_input');
     expect(types).toContain('agent_turn_started');
+    expect(types).toContain('agent_assistant_text_start');
+    expect(types).toContain('agent_assistant_text_end');
     expect(types).toContain('agent_tool_call_started');
+    expect(types).toContain('agent_tool_call_output_delta');
     expect(types).toContain('agent_tool_call_completed');
+    expect(types).toContain('agent_processing_ended');
     expect(types).toContain('agent_session_completed');
+  });
+
+  it('respects enable_loop_detection=false by allowing repeated rounds until limits', async () => {
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace, 'test.txt'), 'content', 'utf8');
+
+    const adapter = new ScriptedAdapter([
+      { tool_calls: [{ id: 'tc1', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { tool_calls: [{ id: 'tc2', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { tool_calls: [{ id: 'tc3', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { tool_calls: [{ id: 'tc4', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { tool_calls: [{ id: 'tc5', name: 'read_file', arguments: { path: 'test.txt' } }] },
+    ]);
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+
+    const session = new AgentSession(
+      client, makeRegistry(), new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, { max_turns: 4, enable_loop_detection: false })
+    );
+
+    const result = await session.processInput('repeat read_file');
+    expect(result.status).toBe('failure');
+    expect(result.stop_reason).toBe('turn_limit_exceeded');
+  });
+
+  it('first loop detection injects steering and allows recovery', async () => {
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace, 'test.txt'), 'content', 'utf8');
+    const events: AgentEvent[] = [];
+
+    let turn = 0;
+    let sawSteering = false;
+    const adapter: ProviderAdapter = {
+      provider_name: 'loop-steer',
+      async generate() {
+        return {
+          message: { role: 'assistant', content: 'unused' },
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+          model: 'loop-steer',
+          provider: 'loop-steer',
+        };
+      },
+      async *stream(request): AsyncIterable<StreamEvent> {
+        turn += 1;
+        sawSteering = request.messages.some((message) => {
+          if (message.role !== 'user') {
+            return false;
+          }
+          const content = Array.isArray(message.content)
+            ? message.content.map((part) => ('text' in part ? String(part.text ?? '') : '')).join('\n')
+            : String(message.content);
+          return content.includes('Loop detected');
+        });
+
+        yield { type: 'stream_start', model: 'loop-steer' };
+        if (turn <= 3) {
+          yield { type: 'tool_call_delta', id: `tc-${turn}`, name: 'read_file', arguments_delta: JSON.stringify({ path: 'test.txt' }) };
+          yield { type: 'usage', usage: { input_tokens: 1, output_tokens: 1 } };
+          yield {
+            type: 'stream_end',
+            stop_reason: 'tool_use',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_call', id: `tc-${turn}`, name: 'read_file', arguments: JSON.stringify({ path: 'test.txt' }) }],
+            },
+          };
+          return;
+        }
+
+        yield { type: 'content_delta', text: 'Recovered after steering.' };
+        yield { type: 'usage', usage: { input_tokens: 1, output_tokens: 1 } };
+        yield {
+          type: 'stream_end',
+          stop_reason: 'end_turn',
+          message: { role: 'assistant', content: 'Recovered after steering.' },
+        };
+      },
+    };
+
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+    const session = new AgentSession(
+      client, makeRegistry(), new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, { max_turns: 8 }),
+      { onEvent: (event) => events.push(event) },
+    );
+
+    const result = await session.processInput('keep reading test.txt');
+    expect(result.status).toBe('success');
+    expect(result.final_text).toContain('Recovered');
+    expect(sawSteering).toBe(true);
+    expect(events.filter((event) => event.type === 'agent_loop_detected')).toHaveLength(1);
+  });
+
+  it('loop detection reset allows progress after steering', async () => {
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace, 'a.txt'), 'a', 'utf8');
+    await writeFile(path.join(workspace, 'b.txt'), 'b', 'utf8');
+
+    let turn = 0;
+    const adapter: ProviderAdapter = {
+      provider_name: 'loop-reset',
+      async generate() {
+        return {
+          message: { role: 'assistant', content: 'unused' },
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+          model: 'loop-reset',
+          provider: 'loop-reset',
+        };
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        turn += 1;
+        yield { type: 'stream_start', model: 'loop-reset' };
+        if (turn <= 3) {
+          yield { type: 'tool_call_delta', id: `tc-${turn}`, name: 'read_file', arguments_delta: JSON.stringify({ path: 'a.txt' }) };
+          yield { type: 'usage', usage: { input_tokens: 1, output_tokens: 1 } };
+          yield {
+            type: 'stream_end',
+            stop_reason: 'tool_use',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_call', id: `tc-${turn}`, name: 'read_file', arguments: JSON.stringify({ path: 'a.txt' }) }],
+            },
+          };
+          return;
+        }
+        if (turn === 4) {
+          yield { type: 'tool_call_delta', id: 'tc-4', name: 'read_file', arguments_delta: JSON.stringify({ path: 'b.txt' }) };
+          yield { type: 'usage', usage: { input_tokens: 1, output_tokens: 1 } };
+          yield {
+            type: 'stream_end',
+            stop_reason: 'tool_use',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_call', id: 'tc-4', name: 'read_file', arguments: JSON.stringify({ path: 'b.txt' }) }],
+            },
+          };
+          return;
+        }
+        yield { type: 'content_delta', text: 'done' };
+        yield { type: 'usage', usage: { input_tokens: 1, output_tokens: 1 } };
+        yield { type: 'stream_end', stop_reason: 'end_turn', message: { role: 'assistant', content: 'done' } };
+      },
+    };
+
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+    const session = new AgentSession(
+      client, makeRegistry(), new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, { max_turns: 10 }),
+    );
+
+    const result = await session.processInput('try files');
+    expect(result.status).toBe('success');
+    expect(result.tool_call_count).toBe(4);
+  });
+
+  it('fails after 3 loop detections despite steering attempts', async () => {
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace, 'test.txt'), 'content', 'utf8');
+    const events: AgentEvent[] = [];
+
+    let turn = 0;
+    const adapter: ProviderAdapter = {
+      provider_name: 'loop-fail',
+      async generate() {
+        return {
+          message: { role: 'assistant', content: 'unused' },
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+          model: 'loop-fail',
+          provider: 'loop-fail',
+        };
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        turn += 1;
+        yield { type: 'stream_start', model: 'loop-fail' };
+        yield { type: 'tool_call_delta', id: `tc-${turn}`, name: 'read_file', arguments_delta: JSON.stringify({ path: 'test.txt' }) };
+        yield { type: 'usage', usage: { input_tokens: 1, output_tokens: 1 } };
+        yield {
+          type: 'stream_end',
+          stop_reason: 'tool_use',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'tool_call', id: `tc-${turn}`, name: 'read_file', arguments: JSON.stringify({ path: 'test.txt' }) }],
+          },
+        };
+      },
+    };
+
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+    const session = new AgentSession(
+      client, makeRegistry(), new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, { max_turns: 12 }),
+      { onEvent: (event) => events.push(event) },
+    );
+
+    const result = await session.processInput('stuck loop');
+    expect(result.status).toBe('failure');
+    expect(result.stop_reason).toBe('loop_detected');
+    expect(result.error_message).toContain('Loop detected 3 times');
+    expect(events.filter((event) => event.type === 'agent_loop_detected')).toHaveLength(3);
+  });
+
+  it('applies max_command_timeout_ms cap to shell execution', async () => {
+    const workspace = await createWorkspace();
+    let observedTimeout: number | undefined;
+    const events: AgentEvent[] = [];
+
+    const adapter = new ScriptedAdapter([
+      {
+        tool_calls: [{
+          id: 'tc1',
+          name: 'shell',
+          arguments: {
+            command: 'echo hi',
+            description: 'Run hello check',
+            timeout_ms: 5000,
+          },
+        }],
+      },
+      { text: 'done' },
+    ]);
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+
+    const registry = new ToolRegistry();
+    registry.register('shell', shellDescription, shellSchema, shellHandler);
+
+    const env: ExecutionEnvironment = {
+      workspaceRoot: workspace,
+      cwd: workspace,
+      readFile: async () => '',
+      writeFile: async () => {},
+      fileExists: async () => true,
+      deleteFile: async () => {},
+      renameFile: async () => {},
+      resolvePath: async (filePath: string) => path.join(workspace, filePath),
+      exec: async (_command, options) => {
+        observedTimeout = options?.timeout_ms;
+        return { stdout: 'ok', stderr: '', exitCode: 0 };
+      },
+      glob: async () => [],
+      grep: async () => [],
+      scoped: () => env,
+    };
+
+    const session = new AgentSession(
+      client, registry, new AnthropicProfile(),
+      env,
+      makeConfig(workspace, {
+        default_command_timeout_ms: 1000,
+        max_command_timeout_ms: 2000,
+      }),
+      { onEvent: (event) => events.push(event) }
+    );
+
+    const result = await session.processInput('run shell');
+    expect(result.status).toBe('success');
+    expect(observedTimeout).toBe(2000);
+    const started = events.find(
+      (event) => event.type === 'agent_tool_call_started' && (event as any).tool_name === 'shell'
+    );
+    expect(started?.type).toBe('agent_tool_call_started');
+    if (started?.type === 'agent_tool_call_started') {
+      expect(started.arguments.description).toBe('Run hello check');
+    }
+  });
+
+  it('uses SessionConfig.reasoning_effort as the initial model override', async () => {
+    const workspace = await createWorkspace();
+    let capturedReasoning: string | undefined;
+
+    const adapter: ProviderAdapter = {
+      provider_name: 'capture',
+      generate: async () => ({
+        message: { role: 'assistant', content: 'done' },
+        usage: { input_tokens: 1, output_tokens: 1 },
+        stop_reason: 'end_turn',
+        model: 'capture-model',
+        provider: 'capture',
+      }),
+      async *stream(request): AsyncIterable<StreamEvent> {
+        capturedReasoning = request.reasoning_effort;
+        yield { type: 'stream_start', model: 'capture-model' };
+        yield { type: 'content_delta', text: 'done' };
+        yield { type: 'usage', usage: { input_tokens: 1, output_tokens: 1 } };
+        yield { type: 'stream_end', stop_reason: 'end_turn', message: { role: 'assistant', content: 'done' } };
+      },
+    };
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+
+    const session = new AgentSession(
+      client, makeRegistry(), new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, { reasoning_effort: 'high' })
+    );
+
+    const result = await session.processInput('hello');
+    expect(result.status).toBe('success');
+    expect(capturedReasoning).toBe('high');
+  });
+
+  it('applies tool_output_limits and tool_line_limits overrides', async () => {
+    const workspace = await createWorkspace();
+    const events: AgentEvent[] = [];
+
+    const adapter = new ScriptedAdapter([
+      { tool_calls: [{ id: 'tc1', name: 'grep', arguments: { pattern: 'x' } }] },
+      { text: 'done' },
+    ]);
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+
+    const registry = new ToolRegistry();
+    registry.register('grep', 'Fake grep', { properties: { pattern: { type: 'string' } }, required: ['pattern'] }, async () => {
+      return Array.from({ length: 20 }, (_, i) => `line-${i}`).join('\n');
+    });
+
+    const session = new AgentSession(
+      client, registry, new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, {
+        tool_output_limits: { grep: 120 },
+        tool_line_limits: { grep: 4 },
+      }),
+      { onEvent: (event) => events.push(event) }
+    );
+
+    const result = await session.processInput('run grep');
+    expect(result.status).toBe('success');
+    const warning = events.find((event) => event.type === 'agent_warning');
+    expect(warning?.type).toBe('agent_warning');
+    if (warning?.type === 'agent_warning') {
+      expect(warning.code).toBe('tool_output_truncated');
+    }
+    const completed = events.find((event) => event.type === 'agent_tool_call_completed');
+    expect(completed?.type).toBe('agent_tool_call_completed');
+    if (completed?.type === 'agent_tool_call_completed') {
+      expect(completed.content_preview).toContain('lines omitted');
+    }
+  });
+
+  it('emits agent_turn_limit_reached and agent_error when max_turns is exhausted', async () => {
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace, 'test.txt'), 'content', 'utf8');
+    const events: AgentEvent[] = [];
+
+    const adapter = new ScriptedAdapter([
+      { tool_calls: [{ id: 'tc-1', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { tool_calls: [{ id: 'tc-2', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { tool_calls: [{ id: 'tc-3', name: 'read_file', arguments: { path: 'test.txt' } }] },
+    ]);
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+
+    const session = new AgentSession(
+      client, makeRegistry(), new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, { max_turns: 2 }),
+      { onEvent: (event) => events.push(event) },
+    );
+
+    const result = await session.processInput('loop forever');
+    expect(result.status).toBe('failure');
+    expect(result.stop_reason).toBe('turn_limit_exceeded');
+    expect(events.some((event) => event.type === 'agent_turn_limit_reached')).toBe(true);
+    expect(events.some((event) => event.type === 'agent_error')).toBe(true);
   });
 });

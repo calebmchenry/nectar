@@ -58,7 +58,7 @@ describe('Structured Output per-provider (L4)', () => {
       expect(body.tool_choice).toEqual({ type: 'tool', name: '__structured_output' });
     });
 
-    it('rewrites synthetic tool_use to text in response, stop_reason is end_turn', async () => {
+    it('rewrites synthetic tool_use to text in response, stop_reason is stop', async () => {
       mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
         id: 'msg_1', type: 'message', model: 'claude-sonnet-4-20250514',
         content: [{ type: 'tool_use', id: 'tu_1', name: '__structured_output', input: { name: 'test', score: 95 } }],
@@ -72,7 +72,8 @@ describe('Structured Output per-provider (L4)', () => {
         provider_options: { anthropic: { cache_control: false } }
       });
 
-      expect(result.stop_reason).toBe('end_turn');
+      expect(result.stop_reason).toBe('stop');
+      expect(result.finish_reason.raw).toBe('tool_use');
       const parts = result.message.content as Array<{ type: string; text?: string }>;
       expect(parts[0]!.type).toBe('text');
       const parsed = JSON.parse(parts[0]!.text!);

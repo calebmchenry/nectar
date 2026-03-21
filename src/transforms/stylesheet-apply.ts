@@ -1,5 +1,6 @@
 import { Diagnostic, GardenGraph } from '../garden/types.js';
 import { parseStylesheet, resolveNodeStyle } from '../garden/stylesheet.js';
+import type { Transform, TransformContext } from './types.js';
 
 export interface TransformResult {
   graph: GardenGraph;
@@ -38,4 +39,12 @@ export function applyStylesheet(graph: GardenGraph): TransformResult {
   }
 
   return { graph, diagnostics };
+}
+
+export class StylesheetApplyTransform implements Transform {
+  readonly name = 'stylesheet-apply';
+
+  apply(graph: GardenGraph, _context: TransformContext): TransformResult {
+    return applyStylesheet(graph);
+  }
 }

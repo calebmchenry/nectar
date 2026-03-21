@@ -64,7 +64,8 @@ digraph ComplianceLoop {
         shape=parallelogram,
         label="GPT-5.4 Critique",
         timeout="900s",
-        script="codex exec --model gpt-5.4 --reasoning extra-high 'Read docs/sprints/drafts/NEXT-CODEX-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CLAUDE-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
+        reasoning_effort="high",
+        script="codex exec --model gpt-5.4 'Read docs/sprints/drafts/NEXT-CODEX-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CLAUDE-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
     ]
 
     codex_critique [

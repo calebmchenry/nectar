@@ -88,8 +88,8 @@ describe('pipeline engine', () => {
       expect(completedComplianceChecks).toBeGreaterThanOrEqual(2);
 
       const implementEntry = cocoon?.completed_nodes.find((node) => node.node_id === 'implement');
-      // GAP-26: failure status no longer triggers retry — only 'retry' status does
-      expect(implementEntry?.retries).toBe(0);
+      // Sprint 026: failure outcomes are now retry-eligible.
+      expect(implementEntry?.retries).toBeGreaterThanOrEqual(1);
     } finally {
       process.chdir(originalCwd);
     }

@@ -40,6 +40,12 @@ describe('shell tool', () => {
     expect(result).toContain('Exit code: 42');
   });
 
+  it('includes optional description in output', async () => {
+    const env = await setup();
+    const result = await shellHandler({ command: 'echo "hello"', description: 'Run quick hello check' }, env);
+    expect(result).toContain('Description: Run quick hello check');
+  });
+
   it('filters sensitive environment variables', async () => {
     const env = await setup();
     // Set a sensitive env var
@@ -55,5 +61,13 @@ describe('shell tool', () => {
         process.env['MY_API_KEY'] = originalKey;
       }
     }
+  });
+
+  it('appends timeout guidance when command times out', async () => {
+    const env = await setup();
+    const result = await shellHandler({ command: 'sleep 1', timeout_ms: 10 }, env);
+    expect(result).toContain('Exit code: 124');
+    expect(result).toContain('[ERROR: Command timed out after');
+    expect(result).toContain('timeout_ms parameter');
   });
 });

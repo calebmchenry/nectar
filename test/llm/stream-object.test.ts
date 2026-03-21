@@ -50,7 +50,7 @@ describe('streamObject()', () => {
     provider: 'mock-stream'
   };
 
-  it('accumulates text and yields partial events', async () => {
+  it('yields partial object snapshots as top-level keys complete', async () => {
     const client = makeClient(streamProvider(['{"name":', '"Alice",', '"score":95}']));
     const events: StreamObjectEvent<unknown>[] = [];
 
@@ -59,12 +59,15 @@ describe('streamObject()', () => {
     }
 
     const partials = events.filter(e => e.type === 'partial');
-    expect(partials.length).toBe(3);
-    expect((partials[0] as { type: 'partial'; text_so_far: string }).text_so_far).toBe('{"name":');
-    expect((partials[2] as { type: 'partial'; text_so_far: string }).text_so_far).toBe('{"name":"Alice","score":95}');
+    expect(partials.length).toBe(2);
+    expect((partials[0] as { type: 'partial'; object: Record<string, unknown> }).object).toEqual({ name: 'Alice' });
+    expect((partials[1] as { type: 'partial'; object: Record<string, unknown> }).object).toEqual({
+      name: 'Alice',
+      score: 95,
+    });
   });
 
-  it('yields object event with correct type on valid JSON', async () => {
+  it('yields complete event with correct type on valid JSON', async () => {
     const json = '{"name":"Bob","score":80}';
     const client = makeClient(streamProvider([json]));
     const events: StreamObjectEvent<{ name: string; score: number }>[] = [];
@@ -73,7 +76,7 @@ describe('streamObject()', () => {
       events.push(e);
     }
 
-    const objEvent = events.find(e => e.type === 'object') as { type: 'object'; object: { name: string; score: number }; raw_text: string };
+    const objEvent = events.find(e => e.type === 'complete') as { type: 'complete'; object: { name: string; score: number }; raw_text: string };
     expect(objEvent).toBeDefined();
     expect(objEvent.object.name).toBe('Bob');
     expect(objEvent.object.score).toBe(80);

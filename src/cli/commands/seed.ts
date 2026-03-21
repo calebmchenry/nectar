@@ -2,11 +2,21 @@ import { Command } from 'commander';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createTheme } from '../ui/theme.js';
+import { RunStore } from '../../checkpoint/run-store.js';
+import { SeedActivityStore } from '../../seedbed/activity.js';
+import { SeedLifecycleService } from '../../seedbed/lifecycle.js';
 import { SeedStore } from '../../seedbed/store.js';
 import { workspacePathsFromCwd } from '../../seedbed/paths.js';
 import { importAttachment } from '../../seedbed/attachments.js';
 import { appendAttachmentLinks } from '../../seedbed/markdown.js';
-import { isValidPriority, isValidStatus, SeedPriority, SEED_PRIORITIES, SEED_STATUSES } from '../../seedbed/types.js';
+import {
+  isValidPriority,
+  isValidStatus,
+  type LinkedRunSummary,
+  type SeedPriority,
+  SEED_PRIORITIES,
+  SEED_STATUSES,
+} from '../../seedbed/types.js';
 
 const MAX_STDIN_BYTES = 1024 * 1024; // 1 MB
 
@@ -91,13 +101,10 @@ export function registerSeedCommand(program: Command): void {
       const theme = createTheme(process.stdout, process.env);
       const ws = workspacePathsFromCwd();
       const store = new SeedStore(ws);
-      const id = Number.parseInt(idStr, 10);
-
-      if (Number.isNaN(id)) {
-        process.stderr.write(`Error: Invalid seed ID "${idStr}".\n`);
-        process.exitCode = 1;
-        return;
-      }
+      const activityStore = new SeedActivityStore(ws);
+      const lifecycle = new SeedLifecycleService(store, activityStore);
+      const id = parseSeedIdArg(idStr);
+      if (id === null) return;
 
       const result = await store.get(id);
       if (!result) {
@@ -107,6 +114,8 @@ export function registerSeedCommand(program: Command): void {
       }
 
       const { meta, seedMd } = result;
+      const linkedRunSummaries = await listLinkedRunSummaries(meta.linked_runs, ws.root);
+      const suggestion = lifecycle.computeStatusSuggestion(meta, linkedRunSummaries);
       process.stdout.write(`${theme.info(`Seed ${meta.id}`)}: ${meta.title}\n`);
       process.stdout.write(`  Status:   ${meta.status}\n`);
       process.stdout.write(`  Priority: ${meta.priority}\n`);
@@ -115,7 +124,69 @@ export function registerSeedCommand(program: Command): void {
       }
       process.stdout.write(`  Created:  ${meta.created_at}\n`);
       process.stdout.write(`  Updated:  ${meta.updated_at}\n`);
+      process.stdout.write(`  Linked Gardens: ${meta.linked_gardens.length}\n`);
+      if (meta.linked_gardens.length > 0) {
+        for (const gardenPath of meta.linked_gardens) {
+          process.stdout.write(`    - ${gardenPath}\n`);
+        }
+      }
+      process.stdout.write(`  Linked Runs: ${linkedRunSummaries.length}\n`);
+      if (linkedRunSummaries.length > 0) {
+        for (const run of linkedRunSummaries.slice(0, 5)) {
+          const runUpdatedAt = run.updated_at ?? run.started_at ?? 'unknown-time';
+          process.stdout.write(`    - ${run.run_id} [${run.status}] (${runUpdatedAt})\n`);
+        }
+      }
+      if (suggestion) {
+        process.stdout.write(`  Status suggestion: ${theme.warn(suggestion.suggested_status)} from run ${suggestion.based_on_run_id}\n`);
+      }
       process.stdout.write(`\n${seedMd}`);
+    });
+
+  seed
+    .command('link')
+    .argument('<id>', 'Seed ID')
+    .argument('<garden-path>', 'Path to linked garden (must be inside gardens/)')
+    .description('Link a seed to a garden path.')
+    .action(async (idStr: string, gardenPath: string) => {
+      const theme = createTheme(process.stdout, process.env);
+      const ws = workspacePathsFromCwd();
+      const store = new SeedStore(ws);
+      const activityStore = new SeedActivityStore(ws);
+      const lifecycle = new SeedLifecycleService(store, activityStore);
+      const id = parseSeedIdArg(idStr);
+      if (id === null) return;
+
+      try {
+        const updated = await lifecycle.linkGarden(id, gardenPath, 'user');
+        process.stdout.write(`${theme.icons.bee} Seed ${updated.id} linked to ${theme.info(gardenPath)}\n`);
+      } catch (err) {
+        process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  seed
+    .command('unlink')
+    .argument('<id>', 'Seed ID')
+    .argument('<garden-path>', 'Path to linked garden (must be inside gardens/)')
+    .description('Unlink a seed from a garden path.')
+    .action(async (idStr: string, gardenPath: string) => {
+      const theme = createTheme(process.stdout, process.env);
+      const ws = workspacePathsFromCwd();
+      const store = new SeedStore(ws);
+      const activityStore = new SeedActivityStore(ws);
+      const lifecycle = new SeedLifecycleService(store, activityStore);
+      const id = parseSeedIdArg(idStr);
+      if (id === null) return;
+
+      try {
+        const updated = await lifecycle.unlinkGarden(id, gardenPath, 'user');
+        process.stdout.write(`${theme.icons.bee} Seed ${updated.id} unlinked from ${theme.info(gardenPath)}\n`);
+      } catch (err) {
+        process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 1;
+      }
     });
 
   // Set status
@@ -206,4 +277,45 @@ async function readStdin(): Promise<string> {
 
     process.stdin.on('error', reject);
   });
+}
+
+function parseSeedIdArg(raw: string): number | null {
+  const id = Number.parseInt(raw, 10);
+  if (Number.isNaN(id) || id <= 0) {
+    process.stderr.write(`Error: Invalid seed ID "${raw}".\n`);
+    process.exitCode = 1;
+    return null;
+  }
+  return id;
+}
+
+async function listLinkedRunSummaries(linkedRuns: string[], workspaceRoot: string): Promise<LinkedRunSummary[]> {
+  const summaries: LinkedRunSummary[] = [];
+
+  for (const runId of linkedRuns) {
+    const store = new RunStore(runId, workspaceRoot);
+    const [manifest, cocoon] = await Promise.all([store.readManifest(), store.readCheckpoint()]);
+    if (!manifest && !cocoon) {
+      summaries.push({
+        run_id: runId,
+        status: 'unknown',
+      });
+      continue;
+    }
+
+    const status = cocoon?.status;
+    summaries.push({
+      run_id: runId,
+      status: status === 'running' || status === 'completed' || status === 'failed' || status === 'interrupted'
+        ? status
+        : 'unknown',
+      dot_file: manifest?.dot_file ?? cocoon?.dot_file,
+      started_at: manifest?.started_at ?? cocoon?.started_at,
+      updated_at: cocoon?.updated_at,
+      seed_garden: manifest?.seed_garden,
+      launch_origin: manifest?.launch_origin,
+    });
+  }
+
+  return summaries;
 }

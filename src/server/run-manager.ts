@@ -15,6 +15,7 @@ import {
   PipelineService,
 } from '../runtime/pipeline-service.js';
 import { AutoApproveInterviewer } from '../interviewer/auto-approve.js';
+import type { Answer } from '../interviewer/types.js';
 import { EventJournal } from './event-journal.js';
 import { HttpInterviewer } from './http-interviewer.js';
 import { QuestionStore, type StoredQuestion } from './question-store.js';
@@ -360,14 +361,18 @@ export class RunManager {
     return questionStore.listPending();
   }
 
-  async submitAnswer(runId: string, questionId: string, selectedLabel: string): Promise<StoredQuestion> {
+  async submitAnswer(
+    runId: string,
+    questionId: string,
+    answer: string | (Partial<Answer> & { selected_label?: string; selected_option?: number | string; text?: string })
+  ): Promise<StoredQuestion> {
     const entry = this.activeRuns.get(runId);
     if (!entry) {
       throw new PipelineConflictError(`Run '${runId}' is not active.`);
     }
 
     try {
-      return await entry.question_store.submitAnswer(questionId, selectedLabel, 'user');
+      return await entry.question_store.submitAnswer(questionId, answer, 'user');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('not found')) {

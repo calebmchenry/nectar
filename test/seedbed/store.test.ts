@@ -204,4 +204,71 @@ describe('SeedStore', () => {
     expect(meta.linked_runs).toEqual([]);
     expect(meta.analysis_status).toBeTruthy();
   });
+
+  it('patch updates both meta title and markdown heading', async () => {
+    const store = new SeedStore(ws);
+    await store.create({ body: 'Old Title\nBody line.' });
+
+    await store.patch(1, { title: 'New Title' });
+    const result = await store.get(1);
+    expect(result?.meta.title).toBe('New Title');
+    expect(result?.seedMd.startsWith('# New Title')).toBe(true);
+  });
+
+  it('patch updates body while preserving attachments section', async () => {
+    const store = new SeedStore(ws);
+    await store.create({ body: 'Original body' });
+
+    const listed = await store.list();
+    const seedPath = path.join(listed[0]!.dirPath, 'seed.md');
+    await writeFile(seedPath, '# Original body\n\nOriginal body\n\n## Attachments\n\n- [a.png](attachments/a.png)\n', 'utf8');
+
+    await store.patch(1, { body: 'Updated body' });
+    const result = await store.get(1);
+    expect(result?.seedMd).toContain('Updated body');
+    expect(result?.seedMd).toContain('## Attachments');
+    expect(result?.seedMd).toContain('attachments/a.png');
+  });
+
+  it('patch merges analysis_status without clobbering existing providers', async () => {
+    const store = new SeedStore(ws);
+    await store.create({ body: 'Analysis patch' });
+
+    await store.patch(1, {
+      analysis_status: {
+        claude: 'running',
+      },
+    });
+
+    const result = await store.get(1);
+    expect(result?.meta.analysis_status.claude).toBe('running');
+    expect(result?.meta.analysis_status.codex).toBe('pending');
+    expect(result?.meta.analysis_status.gemini).toBe('pending');
+  });
+
+  it('patch de-duplicates linked_gardens when adding the same path repeatedly', async () => {
+    const store = new SeedStore(ws);
+    await store.create({ body: 'Linked gardens patch' });
+
+    await store.patch(1, {
+      linked_gardens_add: ['gardens/demo.dot', './gardens/demo.dot', 'gardens/demo.dot'],
+    });
+
+    const result = await store.get(1);
+    expect(result?.meta.linked_gardens).toEqual(['gardens/demo.dot']);
+  });
+
+  it('patch keeps linked_runs newest-first and capped at 25', async () => {
+    const store = new SeedStore(ws);
+    await store.create({ body: 'Linked runs patch' });
+
+    for (let index = 1; index <= 30; index += 1) {
+      await store.patch(1, { linked_runs_add: [`run-${index}`] });
+    }
+
+    const result = await store.get(1);
+    expect(result?.meta.linked_runs.length).toBe(25);
+    expect(result?.meta.linked_runs[0]).toBe('run-30');
+    expect(result?.meta.linked_runs.at(-1)).toBe('run-6');
+  });
 });

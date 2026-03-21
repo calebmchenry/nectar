@@ -1,17 +1,59 @@
+import { readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
 import type { ProviderAdapter } from './adapters/types.js';
-import type { GenerateRequest, GenerateResponse, JsonSchemaDefinition, LLMClient, LLMRequest, LLMResponse, ResponseFormat, Usage } from './types.js';
+import {
+  GenerateResponse,
+  GenerateResult,
+  Message,
+  normalizeContent,
+  toUsage,
+} from './types.js';
+import type {
+  ContentPart,
+  GenerateOptions,
+  GenerateRequest,
+  StepResult,
+  JsonSchemaDefinition,
+  LLMClient,
+  LLMRequest,
+  LLMResponse,
+  StopCondition,
+  ToolCallContentPart,
+  ToolResultContentPart,
+  Usage,
+} from './types.js';
 import type { StreamEvent } from './streaming.js';
 import type { Middleware, GenerateFn, StreamFn } from './middleware.js';
 import { composeGenerateChain, composeStreamChain } from './middleware.js';
 import { AnthropicAdapter } from './adapters/anthropic.js';
 import { OpenAIAdapter } from './adapters/openai.js';
+import { OpenAICompatibleAdapter } from './adapters/openai-compatible.js';
 import { GeminiAdapter } from './adapters/gemini.js';
 import { SimulationProvider } from './simulation.js';
-import { withRetry, createRetryMiddleware } from './retry.js';
-import { ConfigurationError, InvalidRequestError, StructuredOutputError } from './errors.js';
+import { createRetryMiddleware } from './retry.js';
+import { ConfigurationError, InvalidRequestError, StreamError, StructuredOutputError } from './errors.js';
 import { extractJsonText, validateAgainstSchema, buildValidationRetryMessages } from './structured.js';
+import { IncrementalJsonParser } from './incremental-json.js';
+import { isActiveTool, type ToolContext, type ToolDefinition } from './tools.js';
+import { StreamAccumulator } from './stream-accumulator.js';
 
-const PROVIDER_PRIORITY = ['anthropic', 'openai', 'gemini', 'simulation'] as const;
+const PROVIDER_PRIORITY = ['anthropic', 'openai', 'openai_compatible', 'gemini', 'simulation'] as const;
+const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
+
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+  '.avif': 'image/avif',
+};
 
 export interface GenerateObjectRequest extends GenerateRequest {
   response_format: { type: 'json_schema'; json_schema: JsonSchemaDefinition };
@@ -24,17 +66,176 @@ export interface GenerateObjectResponse<T> extends GenerateResponse {
 }
 
 export type StreamObjectEvent<T> =
-  | { type: 'partial'; text_so_far: string }
-  | { type: 'object'; object: T; raw_text: string; usage: Usage }
+  | { type: 'partial'; object: Partial<T>; text_so_far: string }
+  | { type: 'complete'; object: T; raw_text: string; usage: Usage }
   | { type: 'error'; error: StructuredOutputError };
 
 function addUsage(a: Usage, b: Usage): Usage {
-  return {
+  return toUsage({
     input_tokens: a.input_tokens + b.input_tokens,
     output_tokens: a.output_tokens + b.output_tokens,
+    total_tokens: a.total_tokens + b.total_tokens,
     reasoning_tokens: (a.reasoning_tokens ?? 0) + (b.reasoning_tokens ?? 0) || undefined,
     cache_read_tokens: (a.cache_read_tokens ?? 0) + (b.cache_read_tokens ?? 0) || undefined,
     cache_write_tokens: (a.cache_write_tokens ?? 0) + (b.cache_write_tokens ?? 0) || undefined,
+  });
+}
+
+function toUsageOrZero(usage: Usage | undefined): Usage {
+  if (!usage) {
+    return toUsage({ input_tokens: 0, output_tokens: 0 });
+  }
+  return toUsage(usage);
+}
+
+function ensureGenerateResponse(response: GenerateResponse | Record<string, unknown>): GenerateResponse {
+  if (response instanceof GenerateResponse) {
+    return response;
+  }
+
+  const raw = response as Record<string, unknown>;
+  return new GenerateResponse({
+    message: raw['message'] as GenerateResponse['message'],
+    usage: toUsageOrZero(raw['usage'] as Usage | undefined),
+    finish_reason: (raw['finish_reason'] ?? raw['stop_reason']) as string | undefined,
+    model: String(raw['model'] ?? 'unknown'),
+    provider: String(raw['provider'] ?? 'unknown'),
+    id: typeof raw['id'] === 'string' ? raw['id'] : undefined,
+    raw: raw['raw'],
+    warnings: Array.isArray(raw['warnings']) ? raw['warnings'] as GenerateResponse['warnings'] : [],
+    rate_limit: raw['rate_limit'] as GenerateResponse['rate_limit'],
+  });
+}
+
+function normalizePromptRequest(request: GenerateRequest): GenerateRequest {
+  if (typeof request.prompt === 'string' && request.messages && request.messages.length > 0) {
+    throw new InvalidRequestError(
+      request.provider ?? 'unified',
+      'generate() cannot include both prompt and messages. Provide exactly one.',
+    );
+  }
+  if (request.messages && request.messages.length > 0) {
+    return request;
+  }
+  if (typeof request.prompt !== 'string') {
+    throw new InvalidRequestError(request.provider ?? 'unified', 'generate() requires either messages or prompt.');
+  }
+  return {
+    ...request,
+    messages: [Message.user(request.prompt)],
+  };
+}
+
+function isImageMediaType(mediaType: string | undefined): boolean {
+  return Boolean(mediaType && /^image\/[a-z0-9.+-]+$/i.test(mediaType));
+}
+
+function isRemoteImageUri(value: string): boolean {
+  return /^(https?:\/\/|gs:\/\/|s3:\/\/|data:)/i.test(value);
+}
+
+function resolveImageMimeFromPath(filePath: string): string | undefined {
+  const ext = path.extname(filePath).toLowerCase();
+  return IMAGE_MIME_BY_EXTENSION[ext];
+}
+
+async function normalizeImagePart(part: Extract<ContentPart, { type: 'image' }>, provider = 'unified'): Promise<ContentPart> {
+  if (part.source.type === 'base64') {
+    if (!isImageMediaType(part.source.media_type)) {
+      throw new InvalidRequestError(provider, `Image base64 media_type must be image/*, received '${part.source.media_type}'.`);
+    }
+    if (!part.source.data || part.source.data.trim().length === 0) {
+      throw new InvalidRequestError(provider, 'Image base64 source is empty.');
+    }
+    return part;
+  }
+
+  const sourceUrl = part.source.url.trim();
+  if (!sourceUrl) {
+    throw new InvalidRequestError(provider, 'Image URL source is empty.');
+  }
+
+  if (isRemoteImageUri(sourceUrl)) {
+    return part;
+  }
+
+  // Root cause note (Sprint 026): local file image paths were previously passed as
+  // opaque URLs, which caused provider-specific failures or silent drops.
+  const absolutePath = path.resolve(sourceUrl);
+  let fileInfo;
+  try {
+    fileInfo = await stat(absolutePath);
+  } catch (error) {
+    throw new InvalidRequestError(provider, `Image file '${sourceUrl}' was not found.`, error);
+  }
+
+  if (!fileInfo.isFile()) {
+    throw new InvalidRequestError(provider, `Image path '${sourceUrl}' is not a file.`);
+  }
+  if (fileInfo.size > MAX_INLINE_IMAGE_BYTES) {
+    throw new InvalidRequestError(
+      provider,
+      `Image file '${sourceUrl}' exceeds ${MAX_INLINE_IMAGE_BYTES} byte inline limit.`,
+    );
+  }
+
+  const mediaType = resolveImageMimeFromPath(absolutePath);
+  if (!isImageMediaType(mediaType)) {
+    throw new InvalidRequestError(provider, `Unsupported image file type for '${sourceUrl}'.`);
+  }
+
+  const bytes = await readFile(absolutePath);
+  return {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: mediaType!,
+      data: bytes.toString('base64'),
+    },
+  };
+}
+
+async function normalizeRequestImages(request: GenerateRequest): Promise<GenerateRequest> {
+  if (!request.messages || request.messages.length === 0) {
+    return request;
+  }
+  let mutated = false;
+  const provider = request.provider ?? 'unified';
+  const normalizedMessages = await Promise.all(request.messages.map(async (message) => {
+    if (!Array.isArray(message.content)) {
+      return message;
+    }
+
+    let contentMutated = false;
+    const normalizedParts = await Promise.all(message.content.map(async (part) => {
+      if (part.type !== 'image') {
+        return part;
+      }
+      const normalized = await normalizeImagePart(part, provider);
+      if (normalized !== part) {
+        contentMutated = true;
+      }
+      return normalized;
+    }));
+
+    if (!contentMutated) {
+      return message;
+    }
+
+    mutated = true;
+    return {
+      ...message,
+      content: normalizedParts,
+    };
+  }));
+
+  if (!mutated) {
+    return request;
+  }
+
+  return {
+    ...request,
+    messages: normalizedMessages,
   };
 }
 
@@ -69,6 +270,14 @@ export class UnifiedClient implements LLMClient {
     const openaiKey = process.env['OPENAI_API_KEY'];
     if (openaiKey) {
       providers.set('openai', new OpenAIAdapter(openaiKey));
+    }
+
+    const openAICompatibleBaseUrl = process.env['OPENAI_COMPATIBLE_BASE_URL'];
+    if (openAICompatibleBaseUrl) {
+      providers.set(
+        'openai_compatible',
+        new OpenAICompatibleAdapter(process.env['OPENAI_COMPATIBLE_API_KEY'] ?? '', openAICompatibleBaseUrl),
+      );
     }
 
     const geminiKey = process.env['GEMINI_API_KEY'] ?? process.env['GOOGLE_API_KEY'];
@@ -110,9 +319,11 @@ export class UnifiedClient implements LLMClient {
 
   private getGenerateChain(): GenerateFn {
     if (!this.composedGenerate) {
-      const terminal: GenerateFn = (request) => {
-        const adapter = this.resolveProvider(request.provider);
-        return adapter.generate(request);
+      const terminal: GenerateFn = async (request) => {
+        const normalized = await normalizeRequestImages(request);
+        const adapter = this.resolveProvider(normalized.provider);
+        const response = await adapter.generate(normalized);
+        return ensureGenerateResponse(response as GenerateResponse | Record<string, unknown>);
       };
       this.composedGenerate = composeGenerateChain(this.middlewares, terminal);
     }
@@ -122,12 +333,19 @@ export class UnifiedClient implements LLMClient {
   private getStreamChain(): StreamFn {
     if (!this.composedStream) {
       const terminal: StreamFn = (request) => {
-        const adapter = this.resolveProvider(request.provider);
-        return adapter.stream(request);
+        return this.streamWithNormalizedRequest(request);
       };
       this.composedStream = composeStreamChain(this.middlewares, terminal);
     }
     return this.composedStream;
+  }
+
+  private async *streamWithNormalizedRequest(request: GenerateRequest): AsyncIterable<StreamEvent> {
+    const normalized = await normalizeRequestImages(request);
+    const adapter = this.resolveProvider(normalized.provider);
+    for await (const event of adapter.stream(normalized)) {
+      yield event;
+    }
   }
 
   available_providers(): string[] {
@@ -156,7 +374,7 @@ export class UnifiedClient implements LLMClient {
     const maxRetries = request.max_validation_retries ?? 2;
     const schema = request.response_format.json_schema.schema;
     let currentMessages = request.messages;
-    let totalUsage: Usage = { input_tokens: 0, output_tokens: 0 };
+    let totalUsage: Usage = toUsage({ input_tokens: 0, output_tokens: 0 });
     let lastResponse: GenerateResponse | undefined;
     let lastRawText = '';
     let lastErrors: string[] = [];
@@ -202,12 +420,21 @@ export class UnifiedClient implements LLMClient {
       // Validate against schema
       const validation = validateAgainstSchema(parsed, schema);
       if (validation.valid) {
-        return {
-          ...response,
+        const finalResponse = new GenerateResponse({
+          message: response.message,
           usage: totalUsage,
+          finish_reason: response.finish_reason,
+          model: response.model,
+          provider: response.provider,
+          id: response.id,
+          raw: response.raw,
+          warnings: response.warnings,
+          rate_limit: response.rate_limit,
+        });
+        return Object.assign(finalResponse, {
           object: parsed as T,
           raw_text: rawText,
-        };
+        }) as GenerateObjectResponse<T>;
       }
 
       lastErrors = validation.errors;
@@ -241,12 +468,27 @@ export class UnifiedClient implements LLMClient {
 
     const schema = request.response_format.json_schema.schema;
     let textBuffer = '';
-    let finalUsage: Usage = { input_tokens: 0, output_tokens: 0 };
+    let finalUsage: Usage = toUsage({ input_tokens: 0, output_tokens: 0 });
+    const parser = new IncrementalJsonParser<T & Record<string, unknown>>();
+    let parserFailed = false;
 
     for await (const event of this.stream(request)) {
       if (event.type === 'content_delta') {
         textBuffer += event.text;
-        yield { type: 'partial', text_so_far: textBuffer };
+        if (!parserFailed) {
+          try {
+            const partials = parser.feed(event.text);
+            for (const partial of partials) {
+              yield { type: 'partial', object: partial as Partial<T>, text_so_far: textBuffer };
+            }
+          } catch {
+            // Root cause note (Sprint 025 GAP-4): malformed/extra stream bytes should not
+            // break structured streaming; we fall back to buffered parsing on stream_end.
+            parserFailed = true;
+          }
+        } else {
+          yield { type: 'partial', object: {} as Partial<T>, text_so_far: textBuffer };
+        }
       } else if (event.type === 'usage') {
         finalUsage = event.usage;
       } else if (event.type === 'stream_end') {
@@ -278,7 +520,7 @@ export class UnifiedClient implements LLMClient {
         const validation = validateAgainstSchema(parsed, schema);
         if (validation.valid) {
           yield {
-            type: 'object',
+            type: 'complete',
             object: parsed as T,
             raw_text: text,
             usage: finalUsage,
@@ -369,26 +611,347 @@ export function clearDefaultClient(): void {
   _defaultClient = null;
 }
 
+function extractToolCalls(response: GenerateResponse): Array<Extract<ContentPart, { type: 'tool_call' }>> {
+  return normalizeContent(response.message.content)
+    .filter((part): part is Extract<ContentPart, { type: 'tool_call' }> => part.type === 'tool_call');
+}
+
+function normalizeToolResult(result: unknown): string {
+  if (typeof result === 'string') {
+    return result;
+  }
+  if (result === undefined) {
+    return '';
+  }
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return String(result);
+  }
+}
+
+async function executeToolCalls(
+  toolCalls: ToolCallContentPart[],
+  handlers: Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>,
+  contextMessages: Message[],
+  abortSignal?: AbortSignal,
+): Promise<ToolResultContentPart[]> {
+  const calls = toolCalls.map(async (call): Promise<ToolResultContentPart> => {
+    const handler = handlers.get(call.name);
+    if (!handler) {
+      return {
+        type: 'tool_result',
+        tool_call_id: call.id,
+        content: `No execute handler registered for tool '${call.name}'.`,
+        is_error: true,
+      };
+    }
+
+    let parsedArgs: Record<string, unknown>;
+    try {
+      const parsed = call.arguments ? JSON.parse(call.arguments) : {};
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return {
+          type: 'tool_result',
+          tool_call_id: call.id,
+          content: `Invalid arguments for '${call.name}': expected a JSON object.`,
+          is_error: true,
+        };
+      }
+      parsedArgs = parsed as Record<string, unknown>;
+    } catch (error) {
+      return {
+        type: 'tool_result',
+        tool_call_id: call.id,
+        content: `Invalid JSON arguments for '${call.name}': ${error instanceof Error ? error.message : String(error)}`,
+        is_error: true,
+      };
+    }
+
+    try {
+      const output = await handler(parsedArgs, {
+        messages: contextMessages,
+        abort_signal: abortSignal,
+        tool_call_id: call.id,
+      });
+      return {
+        type: 'tool_result',
+        tool_call_id: call.id,
+        content: output,
+        is_error: false,
+      };
+    } catch (error) {
+      return {
+        type: 'tool_result',
+        tool_call_id: call.id,
+        content: error instanceof Error ? error.message : String(error),
+        is_error: true,
+      };
+    }
+  });
+
+  return Promise.all(calls);
+}
+
+function resolveToolHandlers(
+  requestTools: ToolDefinition[] | undefined,
+  legacyTools: Map<string, (args: unknown) => Promise<unknown>> | undefined,
+): Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>> {
+  const handlers = new Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>();
+
+  for (const tool of requestTools ?? []) {
+    if (!isActiveTool(tool)) {
+      continue;
+    }
+    handlers.set(tool.name, async (args, context) => tool.execute(args, context));
+  }
+
+  for (const [name, handler] of legacyTools ?? []) {
+    if (handlers.has(name)) {
+      continue;
+    }
+    handlers.set(name, async (args) => normalizeToolResult(await handler(args)));
+  }
+
+  return handlers;
+}
+
+function shouldAutoExecuteAllCalls(
+  toolCalls: ToolCallContentPart[],
+  handlers: Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>,
+): boolean {
+  return toolCalls.every((toolCall) => handlers.has(toolCall.name));
+}
+
+async function evaluateStopCondition(
+  condition: StopCondition | undefined,
+  response: GenerateResponse,
+  steps: StepResult[],
+): Promise<boolean> {
+  if (!condition) {
+    return false;
+  }
+  const step = steps.length;
+  return Boolean(await condition(response, { step, steps }));
+}
+
+function resolveMaxToolRounds(request: GenerateRequest, opts?: GenerateOptions): number {
+  if (request.max_tool_rounds !== undefined) {
+    return Math.max(0, request.max_tool_rounds);
+  }
+  if (opts !== undefined) {
+    return Math.max(0, opts.maxIterations ?? 10);
+  }
+  return 1;
+}
+
 /**
  * Module-level generate — delegates to the default client.
  */
 export async function generate(
   request: GenerateRequest,
-  opts?: { client?: UnifiedClient }
-): Promise<GenerateResponse> {
+  opts?: GenerateOptions,
+): Promise<GenerateResult> {
   const client = opts?.client ?? getDefaultClient();
-  return client.generateUnified(request);
+  const normalizedRequest = normalizePromptRequest(request);
+  const handlers = resolveToolHandlers(normalizedRequest.tools, opts?.tools);
+  const maxIterations = resolveMaxToolRounds(normalizedRequest, opts);
+  const steps: StepResult[] = [];
+  let totalUsage: Usage = toUsage({ input_tokens: 0, output_tokens: 0 });
+  let iteration = 0;
+  let currentRequest = normalizedRequest;
+  let response = await client.generateUnified(currentRequest);
+
+  while (true) {
+    const toolCalls = extractToolCalls(response);
+    totalUsage = addUsage(totalUsage, response.usage);
+    steps.push({
+      step: steps.length + 1,
+      output: response,
+      usage: response.usage,
+      tool_calls: toolCalls,
+    });
+
+    if (await evaluateStopCondition(normalizedRequest.stop_when, response, steps)) {
+      break;
+    }
+
+    if (toolCalls.length === 0 || iteration >= maxIterations) {
+      break;
+    }
+
+    // Passive tools are returned to the caller unchanged.
+    if (!shouldAutoExecuteAllCalls(toolCalls, handlers)) {
+      break;
+    }
+
+    const contextMessages = [...(currentRequest.messages ?? []), response.message];
+    const toolResults = await executeToolCalls(toolCalls, handlers, contextMessages, currentRequest.abort_signal);
+    steps[steps.length - 1]!.tool_results = toolResults;
+
+    const toolMessage = {
+      role: 'tool' as const,
+      content: toolResults,
+    };
+    currentRequest = {
+      ...currentRequest,
+      messages: [...(currentRequest.messages ?? []), response.message, toolMessage],
+    };
+
+    response = await client.generateUnified(currentRequest);
+    iteration += 1;
+  }
+
+  return new GenerateResult({
+    output: response,
+    steps,
+    total_usage: totalUsage,
+  });
 }
 
 /**
- * Module-level stream — delegates to the default client.
+ * Backward-compatible stream wrapper with response accumulation and tool-loop support.
  */
+export class StreamResult implements AsyncIterable<StreamEvent> {
+  private readonly source: AsyncIterable<StreamEvent>;
+  private readonly accumulator: StreamAccumulator;
+  private consumeStarted = false;
+  private consumed = false;
+  private consumeError: unknown;
+  private readonly done: Promise<void>;
+  private doneResolve!: () => void;
+  private doneReject!: (error: unknown) => void;
+
+  constructor(source: AsyncIterable<StreamEvent>, options?: { provider?: string; model?: string }) {
+    this.source = source;
+    this.accumulator = new StreamAccumulator(options);
+    this.done = new Promise<void>((resolve, reject) => {
+      this.doneResolve = resolve;
+      this.doneReject = reject;
+    });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
+    if (this.consumeStarted) {
+      throw new Error('StreamResult can only be iterated once.');
+    }
+    this.consumeStarted = true;
+    return this.consumeGenerator()[Symbol.asyncIterator]();
+  }
+
+  get text_stream(): AsyncIterable<string> {
+    const self = this;
+    return {
+      async *[Symbol.asyncIterator](): AsyncIterator<string> {
+        for await (const event of self) {
+          if (event.type === 'content_delta') {
+            yield event.text;
+          }
+        }
+      },
+    };
+  }
+
+  get partial_response(): GenerateResponse {
+    return this.accumulator.partial_response;
+  }
+
+  async response(): Promise<GenerateResponse> {
+    if (!this.consumeStarted) {
+      for await (const _event of this) {
+        // Drain when caller requests response without iterating.
+      }
+    }
+    await this.done;
+    if (this.consumeError) {
+      throw this.consumeError;
+    }
+    return this.accumulator.response();
+  }
+
+  private async *consumeGenerator(): AsyncGenerator<StreamEvent> {
+    try {
+      for await (const event of this.source) {
+        this.accumulator.push(event);
+        yield event;
+      }
+      this.consumed = true;
+      this.doneResolve();
+    } catch (error) {
+      this.consumeError = error;
+      this.doneReject(error);
+      throw error;
+    }
+  }
+}
+
+async function* streamWithToolLoop(
+  request: GenerateRequest,
+  client: UnifiedClient,
+  handlers: Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>,
+): AsyncIterable<StreamEvent> {
+  let currentRequest = normalizePromptRequest(request);
+  let step = 0;
+  const maxIterations = resolveMaxToolRounds(currentRequest);
+  let iteration = 0;
+
+  while (true) {
+    step += 1;
+    const stepAccumulator = new StreamAccumulator({
+      provider: currentRequest.provider,
+      model: currentRequest.model,
+    });
+
+    for await (const event of client.stream(currentRequest)) {
+      stepAccumulator.push(event);
+      yield event;
+    }
+
+    if (!stepAccumulator.hasStreamEnd()) {
+      yield {
+        type: 'error',
+        error: new StreamError(currentRequest.provider ?? 'unified', {
+          phase: 'transport',
+          message: 'Stream ended without a terminal stream_end event.',
+        }),
+      };
+      return;
+    }
+
+    const response = stepAccumulator.response();
+    yield { type: 'step_finish', step, response };
+
+    const toolCalls = extractToolCalls(response);
+    if (toolCalls.length === 0 || iteration >= maxIterations) {
+      return;
+    }
+
+    if (!shouldAutoExecuteAllCalls(toolCalls, handlers)) {
+      return;
+    }
+
+    const contextMessages = [...(currentRequest.messages ?? []), response.message];
+    const toolResults = await executeToolCalls(toolCalls, handlers, contextMessages, currentRequest.abort_signal);
+    currentRequest = {
+      ...currentRequest,
+      messages: [...(currentRequest.messages ?? []), response.message, { role: 'tool', content: toolResults }],
+    };
+    iteration += 1;
+  }
+}
+
 export function stream(
   request: GenerateRequest,
-  opts?: { client?: UnifiedClient }
-): AsyncIterable<StreamEvent> {
+  opts?: { client?: UnifiedClient; tools?: Map<string, (args: unknown) => Promise<unknown> > }
+): StreamResult {
   const client = opts?.client ?? getDefaultClient();
-  return client.stream(request);
+  const normalizedRequest = normalizePromptRequest(request);
+  const handlers = resolveToolHandlers(normalizedRequest.tools, opts?.tools);
+  const source = streamWithToolLoop(normalizedRequest, client, handlers);
+  return new StreamResult(source, {
+    provider: normalizedRequest.provider,
+    model: normalizedRequest.model,
+  });
 }
 
 // Re-export for backward compat — tests import AnthropicProvider from client.ts

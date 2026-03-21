@@ -4,6 +4,7 @@ import type { StreamEvent } from '../streaming.js';
 import {
   GenerateResponse,
   normalizeContent,
+  sanitizeMessageName,
 } from '../types.js';
 import type {
   ContentPart,
@@ -204,10 +205,12 @@ function translateMessages(
         if (part.type !== 'tool_result') {
           continue;
         }
+        const name = sanitizeMessageName(message.name);
         translated.push({
           role: 'tool',
           tool_call_id: part.tool_call_id,
           content: part.content,
+          ...(name ? { name } : {}),
         });
       }
       continue;
@@ -234,6 +237,7 @@ function translateMessages(
         role: 'assistant',
         content: textContent.length > 0 ? textContent : '',
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+        ...(sanitizeMessageName(message.name) ? { name: sanitizeMessageName(message.name) } : {}),
       });
       continue;
     }
@@ -252,13 +256,20 @@ function translateMessages(
     }
 
     if (contentBlocks.length === 1 && contentBlocks[0]?.type === 'text') {
-      translated.push({ role: toChatRole(message.role), content: String(contentBlocks[0].text ?? '') });
+      const name = sanitizeMessageName(message.name);
+      translated.push({
+        role: toChatRole(message.role),
+        content: String(contentBlocks[0].text ?? ''),
+        ...(name ? { name } : {}),
+      });
       continue;
     }
 
+    const name = sanitizeMessageName(message.name);
     translated.push({
       role: toChatRole(message.role),
       content: contentBlocks.length > 0 ? contentBlocks : '',
+      ...(name ? { name } : {}),
     });
   }
 

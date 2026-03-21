@@ -1,6 +1,6 @@
 export type NodeKind = 'start' | 'exit' | 'tool' | 'codergen' | 'conditional' | 'wait.human' | 'parallel' | 'parallel.fan_in' | 'stack.manager_loop' | 'unknown';
 
-export type Severity = 'error' | 'warning';
+export type Severity = 'error' | 'warning' | 'info';
 
 export interface SourceLocation {
   line: number;
@@ -13,6 +13,30 @@ export interface Diagnostic {
   message: string;
   file?: string;
   location?: SourceLocation;
+  fix?: string;
+  node_id?: string;
+  edge?: {
+    source: string;
+    target: string;
+    label?: string;
+    condition?: string;
+  };
+}
+
+export interface NodeProvenance {
+  dotPath: string;
+  originalId: string;
+}
+
+export interface EdgeProvenance {
+  dotPath: string;
+  originalSource: string;
+  originalTarget: string;
+}
+
+export interface SubgraphProvenance {
+  dotPath: string;
+  originalId: string;
 }
 
 export interface GardenNode {
@@ -22,6 +46,7 @@ export interface GardenNode {
   type?: string;
   kind: NodeKind;
   maxRetries?: number;
+  retryPolicy?: string;
   timeoutMs?: number;
   goalGate?: boolean;
   retryTarget?: string;
@@ -37,6 +62,8 @@ export interface GardenNode {
   autoStatus?: boolean;
   fidelity?: string;
   threadId?: string;
+  toolCommand?: string;
+  toolCommandFromScript?: boolean;
   managerPollIntervalMs?: number;
   managerMaxCycles?: number;
   managerStopCondition?: string;
@@ -47,6 +74,7 @@ export interface GardenNode {
   classes: string[];
   attributes: Record<string, string>;
   location?: SourceLocation;
+  provenance?: NodeProvenance;
 }
 
 export interface GardenEdge {
@@ -60,12 +88,14 @@ export interface GardenEdge {
   loopRestart: boolean;
   attributes: Record<string, string>;
   location?: SourceLocation;
+  provenance?: EdgeProvenance;
 }
 
 export interface Subgraph {
   id: string;
   label?: string;
   nodeIds: string[];
+  provenance?: SubgraphProvenance;
 }
 
 export interface GardenGraph {
@@ -73,6 +103,7 @@ export interface GardenGraph {
   dotSource: string;
   graphAttributes: Record<string, string>;
   defaultMaxRetries?: number;
+  defaultRetryPolicy?: string;
   defaultFidelity?: string;
   modelStylesheet?: string;
   childDotfile?: string;

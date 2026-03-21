@@ -1,5 +1,6 @@
 import { Router, HttpError, parseLastEventId } from '../router.js';
 import { createFiniteSseStream } from '../sse.js';
+import { AnswerValue } from '../../interviewer/types.js';
 import {
   PIPELINE_TERMINAL_EVENT_TYPES,
   type EventEnvelope,
@@ -150,13 +151,26 @@ export function registerPipelineRoutes(router: Router, options: PipelineRoutesOp
   });
 
   router.register('POST', '/pipelines/:id/questions/:qid/answer', async (ctx) => {
-    const body = await ctx.readJson<{ answer?: string; selected_label?: string }>();
-    const selectedLabel = body.selected_label?.trim() || body.answer?.trim();
-    if (!selectedLabel) {
+    const body = await ctx.readJson<{
+      answer?: string;
+      selected_label?: string;
+      selected_option?: number;
+      text?: string;
+      answer_value?: AnswerValue;
+    }>();
+    const selectedLabel = body.selected_label?.trim() || body.answer?.trim() || body.text?.trim();
+    const hasSelectedOption = Number.isInteger(body.selected_option) && (body.selected_option as number) >= 0;
+    if (!selectedLabel && !hasSelectedOption) {
       throw new HttpError(400, 'VALIDATION_ERROR', 'Answer must include selected_label or answer.');
     }
 
-    const answered = await runManager.submitAnswer(ctx.params.id!, ctx.params.qid!, selectedLabel);
+    const answered = await runManager.submitAnswer(ctx.params.id!, ctx.params.qid!, {
+      selected_label: selectedLabel,
+      selected_option: hasSelectedOption ? body.selected_option : undefined,
+      answer_value: body.answer_value,
+      text: body.text,
+      source: 'user',
+    });
     ctx.sendJson(200, {
       question_id: answered.question_id,
       status: answered.status,

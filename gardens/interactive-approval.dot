@@ -1,20 +1,17 @@
 digraph InteractiveApproval {
-  // Sample pipeline demonstrating human-in-the-loop gates
-  // Run with: nectar run gardens/interactive-approval.dot
-  // Or auto: nectar run --auto-approve gardens/interactive-approval.dot
+  graph [
+    goal="Require explicit human approval before deployment",
+    label="Interactive Approval"
+  ]
 
   start [shape=Mdiamond, label="Start"]
-
-  review [shape=hexagon, label="Review changes?"]
-  deploy [shape=parallelogram, label="Deploy", script="echo '🚀 Deploying changes...'"]
-  revise [shape=parallelogram, label="Revise", script="echo '📝 Revising changes...'"]
+  approval [shape=hexagon, label="Choose deployment action"]
+  deploy [shape=parallelogram, tool_command="echo deploy-approved"]
+  reject_exit [shape=Msquare, label="Rejected"]
   done [shape=Msquare, label="Done"]
-  aborted [shape=Msquare, label="Aborted"]
 
-  start -> review
-  review -> deploy [label="[A] Approve"]
-  review -> revise [label="[R] Revise"]
-  review -> aborted [label="[X] Reject"]
-  revise -> review
+  start -> approval
+  approval -> deploy [label="[A] Approve"]
+  approval -> reject_exit [label="[R] Reject"]
   deploy -> done
 }

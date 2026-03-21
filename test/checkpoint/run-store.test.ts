@@ -58,6 +58,28 @@ describe('RunStore', () => {
     expect(manifest!.graph_hash).toBe('abc123');
   });
 
+  it('persists optional seed linkage metadata in manifest', async () => {
+    const ws = await createWorkspace();
+    const store = new RunStore('run-seed', ws);
+    await store.initialize({
+      run_id: 'run-seed',
+      dot_file: 'gardens/seed.dot',
+      graph_hash: 'seed-hash',
+      started_at: '2026-01-01T00:00:00Z',
+      workspace_root: ws,
+      seed_id: 42,
+      seed_dir: 'seedbed/042-seed',
+      seed_garden: 'gardens/seed.dot',
+      launch_origin: 'seedbed',
+    });
+
+    const manifest = await store.readManifest();
+    expect(manifest?.seed_id).toBe(42);
+    expect(manifest?.seed_dir).toBe('seedbed/042-seed');
+    expect(manifest?.seed_garden).toBe('gardens/seed.dot');
+    expect(manifest?.launch_origin).toBe('seedbed');
+  });
+
   it('writes and reads canonical checkpoint.json', async () => {
     const ws = await createWorkspace();
     const store = new RunStore('run-002', ws);

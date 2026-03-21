@@ -75,4 +75,20 @@ describe('grep tool', () => {
     const result = await grepHandler({ pattern: '[invalid' }, env);
     expect(result).toContain('Invalid regex');
   });
+
+  it('supports case_insensitive matching', async () => {
+    const env = await setup();
+    await writeFile(path.join(env.workspaceRoot, 'todo.txt'), 'Todo item\n', 'utf8');
+
+    const result = await grepHandler({ pattern: 'todo', case_insensitive: true }, env);
+    expect(result).toContain('todo.txt:1:Todo item');
+  });
+
+  it('does not match different casing when case_insensitive is false', async () => {
+    const env = await setup();
+    await writeFile(path.join(env.workspaceRoot, 'todo.txt'), 'Todo item\n', 'utf8');
+
+    const result = await grepHandler({ pattern: 'todo' }, env);
+    expect(result).toContain('No matches');
+  });
 });

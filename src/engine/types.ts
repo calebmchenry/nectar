@@ -1,8 +1,17 @@
 import { GardenEdge, GardenNode } from '../garden/types.js';
 import type { FidelityMode, ResolvedFidelityPlan } from './fidelity.js';
+import type { StepResultState } from './step-state.js';
 
 export type NodeStatus = 'success' | 'failure' | 'partial_success' | 'retry' | 'skipped';
 export type RunStatus = 'running' | 'completed' | 'failed' | 'interrupted';
+export type ErrorCategory =
+  | 'network'
+  | 'http_400'
+  | 'http_401'
+  | 'http_403'
+  | 'http_429'
+  | 'http_5xx'
+  | 'unknown';
 
 export interface NodeOutcome {
   status: NodeStatus;
@@ -14,6 +23,11 @@ export interface NodeOutcome {
   stderr?: string;
   timed_out?: boolean;
   error_message?: string;
+  /**
+   * Optional retry classification used by engine shouldRetry().
+   * When absent, retry behavior remains backwards-compatible (retryable).
+   */
+  error_category?: ErrorCategory;
 }
 
 export interface CompletedNodeState {
@@ -36,6 +50,8 @@ export interface RunState {
   current_node: string | undefined;
   context: Record<string, string>;
   retry_state: Record<string, number>;
+  step_results: Record<string, StepResultState>;
+  artifact_aliases: Record<string, string>;
 }
 
 export interface RunResult {

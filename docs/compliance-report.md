@@ -1,476 +1,424 @@
-GAPS REMAINING
+NO GAPS REMAINING
 
 # Nectar Compliance Report
 
-**Generated:** 2026-03-20
-**Specs Compared:** attractor-spec.md, coding-agent-loop-spec.md, unified-llm-spec.md
-**Source Inventory:** 111 source files across 13 modules
+**Generated:** 2026-03-21
+**Specs reviewed:** attractor-spec.md, coding-agent-loop-spec.md, unified-llm-spec.md
+**Source directory:** src/
 
 ---
 
 ## IMPLEMENTED
 
-### Attractor Spec (attractor-spec.md)
+### Attractor Spec — DOT Parsing (Section 2)
 
-#### DOT Parsing (Spec §2, DoD §11.1)
-- **Digraph subset:** Parser accepts `digraph ID { ... }` with graph/node/edge attribute blocks (`src/garden/parse.ts`)
-- **Comments:** Both `//` line and `/* */` block comments stripped before parsing
-- **Chained edges:** `A -> B -> C` expanded to individual edges via `splitEdgePath()`
-- **Subgraphs:** Full support with scoped defaults and class derivation from labels via `normalizeClassName()`
-- **Node/edge defaults:** `node [...]` and `edge [...]` blocks parsed and merged via scope stacks
-- **Value types:** String, Integer, Float, Boolean, Duration (`parseTimeoutMs()` supporting ms/s/m/h/d)
-- **Graph attributes:** `goal`, `label`, `model_stylesheet`, `default_max_retries` (with `default_max_retry` legacy alias), `retry_target`, `fallback_retry_target`, `default_fidelity`, `stack.child_dotfile`, `stack.child_workdir`, `tool_hooks.pre`, `tool_hooks.post` extracted
-- **Node attributes:** `label`, `shape`, `type`, `prompt`, `max_retries`, `goal_gate`, `retry_target`, `fallback_retry_target`, `fidelity`, `thread_id`, `class`, `timeout`, `llm_model`, `llm_provider`, `reasoning_effort`, `auto_status`, `allow_partial`, `join_policy`, `max_parallel`, `human.default_choice`, manager attributes (`manager.poll_interval`, `manager.max_cycles`, `manager.stop_condition`, `manager.actions`, `stack.child_autostart`) all parsed
-- **Edge attributes:** `label`, `condition`, `weight`, `fidelity`, `thread_id`, `loop_restart` parsed
-- **Quoted/unquoted values:** Both work correctly
-- **Class attribute:** Comma-separated class names parsed and used for stylesheet targeting
-- **SHA256 hashing:** Source hashed for graph version tracking
+- **DOT subset parser** — `src/garden/parse.ts` parses `digraph` with directed edges, node/edge attributes, comments (`//` and `/* */`), quoted/unquoted values, subgraphs, node/edge default blocks, chained edges, multi-line attribute blocks
+- **Graph-level attributes** — goal, label, model_stylesheet, default_max_retries, retry_target, fallback_retry_target, default_fidelity, stack.child_dotfile, stack.child_workdir, tool_hooks.pre/post all parsed in `parse.ts`
+- **Legacy alias** — `default_max_retry` accepted as alias for `default_max_retries` (`parse.ts:298`)
+- **Node attributes** — label, shape, type, prompt, max_retries, goal_gate, retry_target, fallback_retry_target, fidelity, thread_id, class, timeout, llm_model, llm_provider, reasoning_effort, auto_status, allow_partial all defined in `src/garden/types.ts` GardenNode
+- **Edge attributes** — label, condition, weight, fidelity, thread_id, loop_restart all defined in GardenEdge
+- **Shape-to-handler mapping** — All 9 shapes mapped: Mdiamond→start, Msquare→exit, box→codergen, hexagon→wait.human, diamond→conditional, component→parallel, tripleoctagon→parallel.fan_in, parallelogram→tool, house→stack.manager_loop (`src/garden/types.ts` normalizeShape/normalizeNodeKind)
+- **Subgraph scoping** — Class derivation from subgraph labels implemented (label="Loop A" → class "loop-a"); scope stacks for defaults in `parse.ts`
+- **Value types** — String, Integer, Boolean, Duration (parseTimeoutMs supports s, m, h, d, ms) all supported
+- **Chained edges** — `A -> B -> C` expands to two edges with shared attributes (`parse.ts:238-267`)
+- **Graph hashing** — `hashDotSource()` for versioning/change detection
+- **Graph serialization** — `src/garden/serialize.ts` serializes graph back to DOT format with sorted nodes/edges/attributes, subgraph rendering, proper DOT escaping
 
-#### Validation and Linting (Spec §7, DoD §11.2)
-- **Start node:** Exactly one required (shape=Mdiamond or id matching start/Start) — ERROR severity (`src/garden/validate.ts`)
-- **Exit node:** At least one required (shape=Msquare or id matching exit/end) — ERROR severity
-- **Start no incoming edges:** Validated — ERROR severity
-- **Exit no outgoing edges:** Validated — ERROR severity
-- **Reachability:** BFS from start node via `findUnreachableNodes()`; unreachable nodes reported — ERROR severity
-- **Edge targets exist:** Both source and target IDs validated (`UNKNOWN_EDGE_SOURCE`, `UNKNOWN_EDGE_TARGET`) — ERROR severity
-- **Condition syntax:** Edge conditions parsed and validated — ERROR severity
-- **Stylesheet syntax:** `model_stylesheet` parsed and validated — ERROR severity
-- **Prompt on LLM nodes:** Warning if codergen nodes lack prompt attribute (`PROMPT_MISSING`) — WARNING severity
-- **Fidelity valid:** Values validated against allowed modes — WARNING severity
-- **Retry target exists:** Both `retry_target` and `fallback_retry_target` validated — WARNING severity
-- **Goal gate has retry:** Warning if `goal_gate=true` without retry_target at node or graph level — WARNING severity
-- **Type known:** Unrecognized node types flagged (`TYPE_UNKNOWN`) — WARNING severity
-- **validate_or_raise:** Throws on error-severity violations
-- **Diagnostic model:** Full rule name, severity (error/warning), node/edge ID, message, source location
-- **Cycle detection:** Cycles without exit path detected via Tarjan's SCC algorithm
-- **Parallel topology:** Parallel nodes require ≥2 outgoing edges; fan-in needs upstream parallel ancestor
-- **Manager validation:** Actions, max_cycles, poll_interval, stop_condition, child_dotfile all validated
-- **Additional checks:** Duplicate node IDs, join_policy values, max_parallel values, reasoning_effort values, llm_provider recognition, tool_hooks on non-codergen nodes
+### Attractor Spec — Validation and Linting (Section 7)
 
-#### Execution Engine (Spec §3, DoD §11.3)
-- **Start node resolution:** Engine finds start node by shape=Mdiamond or id matching (`src/engine/engine.ts`)
-- **Handler dispatch:** Shape-to-handler-type mapping via `normalizeNodeKind()` with explicit `type` override (`src/handlers/registry.ts`)
-- **Handler interface:** Common `execute(HandlerExecutionInput) -> NodeOutcome` contract
-- **Edge selection:** Full 5-step priority algorithm — condition match → preferred label → suggested IDs → weight → lexical tiebreak (`src/engine/edge-selector.ts`)
-- **Label normalization:** Accelerator prefix stripping ([X], X), X -) for label matching
-- **Core loop:** Execute node → apply context updates → save checkpoint → select edge → advance
-- **Terminal node:** shape=Msquare stops execution; goal gate check performed before exit
-- **Pipeline outcome:** SUCCESS if all goal gates satisfied, FAIL otherwise
-- **Status file contract:** `status.json` written per node in `{logs_root}/{node_id}/`
-- **auto_status:** When handler returns no explicit status and auto_status=true, engine defaults to success
-- **loop_restart:** Edge attribute `loop_restart=true` terminates current run and re-launches with fresh log directory; restart chains tracked via `RunResult.restart` with predecessor/successor fields
+- **start_node** (ERROR) — Exactly one start node required (`validate.ts:40`)
+- **terminal_node** (ERROR) — At least one exit node required (`validate.ts:52`)
+- **start_no_incoming** (ERROR) — Start must have no incoming edges (`validate.ts:64`)
+- **exit_no_outgoing** (ERROR) — Exit must have no outgoing edges (`validate.ts:78`)
+- **reachability** (ERROR) — All nodes reachable from start via BFS (`validate.ts` findUnreachableNodes)
+- **edge_target_exists** (ERROR) — Validated during parsing
+- **condition_syntax** (ERROR) — Edge conditions validated via `validateConditionExpression()` (`validate.ts:419`)
+- **stylesheet_syntax** (ERROR) — model_stylesheet validated (`validate.ts:16`)
+- **type_known** (WARNING) — Node types checked against known set (`validate.ts:109`)
+- **fidelity_valid** (WARNING) — Fidelity modes checked against enum (`validate.ts:120`)
+- **retry_target_exists** (WARNING) — retry_target/fallback_retry_target reference existing nodes (`validate.ts:138`)
+- **goal_gate_has_retry** (WARNING) — Goal gate nodes warned if no retry target (`validate.ts:158`)
+- **prompt_on_llm_nodes** (WARNING) — Codergen nodes warned if missing prompt (`validate.ts:272`)
+- **Diagnostic model** — rule, severity, message, node_id, edge, fix fields all present (`src/garden/types.ts:15-19`)
+- **Severity levels** — ERROR, WARNING, INFO all defined (`src/garden/types.ts:3`)
+- **validate_or_raise** semantics — `loadAndValidate()` in `cli/commands/shared.ts` checks for errors
+- **Cycle detection** — Tarjan's SCC and findCyclesWithoutExitPath in validate.ts
+- **Parallel topology** — Parallel nodes need 2+ edges; fan-in must have parallel ancestor
+- **join_policy validation** — Validated against allowed values (`validate.ts:228`)
+- **max_parallel validation** — Validated (`validate.ts:242`)
+- **reasoning_effort validation** — Validated against low/medium/high (`validate.ts:257`)
+- **llm_provider validation** — Validated against known providers (`validate.ts:271`)
+- **Manager node validation** — stack.child_dotfile, stop_condition, etc. (`validate.ts:297`)
+- **Tool hook validation** — Pre/post hook expressions validated (`validate.ts:395`)
 
-#### Goal Gate Enforcement (Spec §3.4, DoD §11.4)
-- **Goal gate tracking:** Nodes with `goal_gate=true` tracked throughout execution
-- **Exit check:** Before allowing exit, engine checks all goal gate nodes have SUCCESS or PARTIAL_SUCCESS
-- **Retry routing:** If unsatisfied, engine routes to `retry_target` → `fallback_retry_target` → graph-level targets
-- **Fail on no target:** Pipeline outcome FAIL if no retry target and goal gates unsatisfied
-- **Goal gate max retries:** Configurable limit (default 5) on goal gate retry cycles
+### Attractor Spec — Execution Engine (Section 3)
 
-#### Retry Logic (Spec §3.5-3.6, DoD §11.5)
-- **max_retries:** Nodes retried on RETRY or FAIL outcomes up to limit (`src/engine/engine.ts`)
-- **Retry count:** Tracked per-node in context and cocoon
-- **Exponential backoff:** Base 200ms, factor 2x, max 60s (`src/engine/retry.ts`)
-- **Jitter:** Random 0.5-1.5x multiplier applied
-- **allow_partial:** On retry exhaustion with `allow_partial=true`, converts to PARTIAL_SUCCESS
-- **Failure routing:** Fail edge → retry_target → fallback_retry_target → pipeline termination (Spec §3.7)
+- **Run lifecycle** — PARSE → TRANSFORM → VALIDATE → INITIALIZE → EXECUTE → FINALIZE in `src/garden/pipeline.ts` and `src/engine/engine.ts`
+- **Core execution loop** — Engine resolves start node, executes handlers, selects edges, advances, repeats (`engine.ts`)
+- **Edge selection 5-step algorithm** — Condition matching → preferred label → suggested next IDs → highest weight → lexical tiebreak (`src/engine/edge-selector.ts`)
+- **Preferred label normalization** — Strips accelerator prefixes [K], K), K -; case-insensitive comparison (`edge-selector.ts`)
+- **Goal gate enforcement** — Visited goal gates checked before exit; jumps to retry_target if unsatisfied; graph-level fallback retry targets supported (`engine.ts`)
+- **Retry logic** — Per-node retry with exponential and linear backoff, jitter range [0.5, 1.5) matching spec (`src/engine/retry.ts`)
+- **Named retry presets** — `none`, `standard`, `aggressive`, `linear`, `patient` all implemented with lookup by name (`src/engine/retry.ts` RETRY_PRESETS)
+- **should_retry predicate** — Error category classification: non-retryable for http_400, http_401, http_403; retryable for network, http_429, http_5xx (`src/engine/retry.ts:120-150`)
+- **Failure routing** — fail edge → retry_target → fallback_retry_target → graph-level → terminate (`engine.ts`)
+- **loop_restart edge** — Supported; RunRestartedEvent emitted; creates fresh run with new log directory (`engine.ts`)
+- **auto_status** — Engine synthesizes SUCCESS when handler writes no status and auto_status=true (`engine.ts`)
+- **allow_partial** — Node attribute parsed and used in retry exhaustion logic to convert to partial_success (`engine.ts`)
+- **Checkpoint save/resume** — Checkpoint saved after each node; resume restores context, completed_nodes, retry counters (`src/checkpoint/cocoon.ts`, `src/checkpoint/run-store.ts`)
+- **Run directory structure** — `{logs_root}/checkpoint.json`, `manifest.json`, `{node_id}/status.json`, `{node_id}/prompt.md`, `{node_id}/response.md`, `artifacts/` all created
+- **Status file contract** — Per-node `status.json` written with outcome, preferred_label, suggested_next_ids, context_updates, notes (`engine.ts:1089`)
+- **Signal handlers** — Graceful shutdown on SIGINT/SIGTERM
+- **Single-threaded traversal** — One node at a time in top-level graph; parallelism only within parallel/fan-in handlers
+- **Isolated branch contexts** — Each parallel branch receives cloned context; branch changes don't merge to parent
+- **Context keys set** — `outcome`, `preferred_label`, `current_node`, `graph.goal`, `internal.retry_count.<node_id>` all set at appropriate points
 
-#### Node Handlers (Spec §4, DoD §11.6)
-- **Start handler:** Returns SUCCESS immediately (`src/handlers/start.ts`)
-- **Exit handler:** Returns SUCCESS immediately; goal gate enforcement in engine (`src/handlers/exit.ts`)
-- **Codergen handler:** Expands `$goal` in prompt, calls LLM backend (AgentSession or legacy), writes prompt.md/response.md/status.json to stage dir (`src/handlers/codergen.ts`)
-- **CodergenBackend interface:** Supports both `UnifiedClient` (AgentSession path) and legacy `LLMClient` — backend-agnostic per Spec §1.4
-- **Wait.human handler:** Derives choices from outgoing edges with accelerator key parsing, presents via Interviewer, returns selected edge as suggested_next; auto-detects question type (YES_NO, MULTIPLE_CHOICE, FREEFORM, CONFIRMATION); validates default_choice, duplicate labels, duplicate accelerators (`src/handlers/wait-human.ts`)
-- **Conditional handler:** No-op returning SUCCESS; routing via engine's edge selection (`src/handlers/conditional.ts`)
-- **Parallel handler:** Fan-out to multiple branches with bounded concurrency (`max_parallel`, default 4), configurable join policy (wait_all/first_success), stores results in context; finds convergence node (tripleoctagon); abort propagation to branches (`src/handlers/parallel.ts`)
-- **Fan-in handler:** Consolidates parallel results, heuristic ranking by status (success > partial_success > retry > failure > skipped), returns best candidate with context updates (`src/handlers/fan-in.ts`)
-- **Tool handler:** Executes shell command via `runScript()`, environment variables injected (NECTAR_RUN_ID, NECTAR_NODE_ID, etc.), timeout support (`src/handlers/tool.ts`)
-- **Manager loop handler:** Orchestrates child pipeline via ChildRunController; autostart or attach mode; poll loop with observe/steer/wait actions; stop condition evaluation; context propagation; abort signal handling (`src/handlers/manager-loop.ts`)
-- **Custom handlers:** Registerable by type string via `registry.register(kind, handler)` (`src/handlers/registry.ts`)
-- **Handler contract:** Handlers return `NodeOutcome`; exceptions caught by engine and converted to FAIL outcomes
+### Attractor Spec — Node Handlers (Section 4)
 
-#### Shape-to-Handler Mapping (Spec §2.8, Appendix B)
-- Mdiamond → start ✓
-- Msquare → exit ✓
-- box → codergen ✓ (default)
-- hexagon → wait.human ✓
-- diamond → conditional ✓
-- component → parallel ✓
-- tripleoctagon → parallel.fan_in ✓
-- parallelogram → tool ✓
-- house → stack.manager_loop ✓
+- **Start handler** — No-op, returns SUCCESS (`src/handlers/start.ts`)
+- **Exit handler** — No-op, returns SUCCESS (`src/handlers/exit.ts`)
+- **Codergen handler** — Builds prompt with $goal expansion, calls LLM backend (via AgentSession or UnifiedClient), writes prompt.md/response.md/status.json, returns context_updates with `last_stage` and `last_response` (`src/handlers/codergen.ts:231-232`)
+- **Wait.human handler** — Derives choices from outgoing edge labels, parses accelerator keys, presents via Interviewer, returns preferred_label/suggested_next_ids, sets `human.gate.selected` and `human.gate.label` context keys (`src/handlers/wait-human.ts:158-159`)
+- **Conditional handler** — No-op returning SUCCESS; routing via engine edge selection (`src/handlers/conditional.ts`)
+- **Parallel handler** — Fans out branches concurrently with bounded parallelism (maxParallel default 4), isolated context clones, supports wait_all and first_success join policies, stores results at `parallel.results` key (`src/handlers/parallel.ts`)
+- **Fan-in handler** — Heuristic ranking path (success > partial_success > retry > failure > skipped) plus LLM-prompted selection path when `node.prompt` is set; records best branch in `parallel.fan_in.best_id`, `parallel.fan_in.best_outcome`, `parallel.fan_in.rationale` (`src/handlers/fan-in.ts`)
+- **Tool handler** — Executes shell script from node `tool_command` attribute with timeout, passes NECTAR_* env vars, writes `tool.output` context key (`src/handlers/tool.ts`)
+- **Manager loop handler** — Polls child pipeline, supports observe/steer/wait actions, evaluates stop conditions, steering cooldown, max_cycles limit, mirrors child state into parent context (`src/handlers/manager-loop.ts`)
+- **Handler registry** — Resolution by explicit type → shape mapping → default; custom registration supported (`src/handlers/registry.ts`)
 
-#### State and Context (Spec §5, DoD §11.7)
-- **Context:** Key-value store with get/set/setMany/snapshot/clone/applyUpdates/appendLog (`src/engine/context.ts`)
-- **Context updates:** Merged after each node from outcome.context_updates
-- **Built-in keys:** `outcome`, `preferred_label`, `graph.goal`, `current_node`, `last_stage`, `last_response`, `internal.retry_count.*` set by engine
-- **Checkpoint:** Serializable cocoon saved after each node — timestamp, current_node, completed_nodes, context, retry_state, pending_transition, thread_registry_keys (`src/checkpoint/types.ts`)
-- **Resume:** Load checkpoint → restore context → restore completed_nodes → continue from current_node; follows restart chains to latest run (`src/cli/commands/resume.ts`, `src/engine/engine.ts`)
-- **Degraded fidelity on resume:** When previous node used `full` fidelity, first resumed node degrades to `summary:high` (`src/engine/fidelity.ts`, `src/checkpoint/types.ts:resume_requires_degraded_fidelity`)
-- **Run directory structure:** `{logs_root}/manifest.json`, `{logs_root}/checkpoint.json`, `{logs_root}/{node_id}/status.json|prompt.md|response.md`, `{logs_root}/artifacts/` (`src/checkpoint/run-store.ts`)
-- **Artifact store:** Named, typed storage with inline (≤100KB) and file-backed modes; store/retrieve/has/list/remove/clear (`src/artifacts/store.ts`, `src/artifacts/types.ts`)
-- **Atomic writes:** Cocoon/manifest writes use temp→rename pattern for crash safety
+### Attractor Spec — State and Context (Section 5)
 
-#### Context Fidelity (Spec §5.4)
-- **Modes:** `full`, `truncate`, `compact`, `summary:low`, `summary:medium`, `summary:high` all implemented (`src/engine/fidelity.ts`)
-- **Token budgets:** full=unbounded, truncate=400, compact=3200, summary:low=2400, summary:medium=6000, summary:high=12000
-- **Resolution precedence:** Edge fidelity → node fidelity → graph default_fidelity → compact fallback
-- **Thread resolution:** Node thread_id → edge thread_id → graph default → derived class → previous node (`src/engine/thread-resolver.ts`)
-- **Session registry:** Thread-based session reuse with FIFO locking and configurable timeout (`src/engine/session-registry.ts`)
-- **Preamble builders:** Mode-specific context preambles with priority-based truncation; includes goal, run ID, node completion table, context snippets, human answers (`src/engine/preamble.ts`)
+- **Context** — Key-value store with get/set/clone/snapshot/restore methods (`src/engine/context.ts`)
+- **Outcome model** — status, preferred_label, suggested_next, context_updates, notes, error_message, error_category (`src/engine/types.ts`)
+- **StageStatus values** — success, failure, partial_success, retry, skipped
+- **Checkpoint** — Serializable with timestamp, current_node, completed_nodes, node_retries, context_values (`src/checkpoint/types.ts`)
+- **Resume** — Loads checkpoint, restores state, follows restart chain, validates graph hash (`cli/commands/resume.ts`)
+- **Fidelity modes** — full, truncate, compact, summary:low/medium/high all supported with token budgets (`src/engine/fidelity.ts`)
+- **Fidelity resolution precedence** — edge → node → graph default → compact (`fidelity.ts`)
+- **Resume fidelity degradation** — Resuming from full fidelity degrades to summary:high for first node (`engine.ts`)
+- **Thread resolution** — node thread_id → edge thread_id → graph default → subgraph class → previous node ID → None (`src/engine/thread-resolver.ts`)
+- **Session registry** — FIFO-locked sessions per thread key with provider/model consistency (`src/engine/session-registry.ts`)
+- **Preamble generation** — Mode-specific context summaries for LLM nodes (full/truncate/compact/summary:*) with token budgets (`src/engine/preamble.ts`)
+- **Artifact store** — Named typed storage with file-backing threshold (100KB), store/retrieve/has/list/remove/clear (`src/artifacts/store.ts`, `src/artifacts/types.ts`)
+- **Step result state** — Per-node step results with output preview and condition scope conversion (`src/engine/step-state.ts`)
 
-#### Human-in-the-Loop (Spec §6, DoD §11.8)
-- **Interviewer interface:** `ask(question: Question) -> Answer` (`src/interviewer/types.ts`)
-- **Question types:** YES_NO, MULTIPLE_CHOICE, FREEFORM, CONFIRMATION
-- **Accelerator key parsing:** `[X] Label`, `X) Label`, `X - Label`, and first character fallback
-- **AutoApproveInterviewer:** Selects default_choice or first option (`src/interviewer/auto-approve.ts`)
-- **ConsoleInterviewer:** Terminal prompting with number/accelerator/label matching, timeout support, non-TTY guard (`src/interviewer/console.ts`)
-- **CallbackInterviewer:** Delegates to provided callback function with timeout support (`src/interviewer/callback.ts`)
-- **QueueInterviewer:** Pre-filled answer queue for deterministic testing (`src/interviewer/queue.ts`)
-- **RecordingInterviewer:** Wraps inner interviewer and records all Q&A pairs including errors (`src/interviewer/recording.ts`)
+### Attractor Spec — Human-in-the-Loop (Section 6)
 
-#### Condition Expressions (Spec §10, DoD §11.9)
-- **= operator:** Exact string comparison ✓
-- **!= operator:** Not-equals comparison ✓
-- **&& conjunction:** AND with multiple clauses ✓
-- **|| disjunction:** OR support (extension beyond spec) ✓
-- **outcome variable:** Resolves to current node's status ✓
-- **preferred_label variable:** Resolves to outcome's preferred label ✓
-- **context.\* variables:** Lookup with fallback (missing keys = empty string) ✓
-- **Empty condition:** Always true ✓
-- **Quoted string literals:** Supported with escape sequences ✓ (`src/engine/conditions.ts`)
+- **Interviewer interface** — `ask()`, `ask_multiple()`, `inform()` methods (`src/interviewer/types.ts:25-29`)
+- **Question model** — id, type, text, choices, default_choice, timeout_ms, node_id, run_id (`src/interviewer/types.ts:9-18`)
+- **QuestionType enum** — YES_NO, MULTIPLE_CHOICE, FREEFORM, CONFIRMATION (`src/interviewer/types.ts:1`)
+- **Answer model** — canonical shape includes `answer_value` (YES/NO/SKIPPED/TIMEOUT), `selected_option`, and `text`, with `selected_label`/`source` compatibility fields (`src/interviewer/types.ts`)
+- **AutoApproveInterviewer** — Returns default_choice or first option (`src/interviewer/auto-approve.ts`)
+- **ConsoleInterviewer** — stdin-based with timeout and accelerator key matching (`src/interviewer/console.ts`)
+- **CallbackInterviewer** — Delegate to callback with timeout support (`src/interviewer/callback.ts`)
+- **QueueInterviewer** — Pre-loaded answer queue; exhausted queue normalizes to `AnswerValue.SKIPPED` (`src/interviewer/queue.ts`)
+- **RecordingInterviewer** — Wraps inner interviewer, records question-answer pairs (`src/interviewer/recording.ts`)
+- **Accelerator key parsing** — [X], X), X - patterns all supported (`src/interviewer/types.ts:46-66`)
+- **Timeout handling** — default_choice on timeout in console and auto-approve interviewers
 
-#### Model Stylesheet (Spec §8, DoD §11.10)
-- **Parsing:** From graph `model_stylesheet` attribute (`src/garden/stylesheet.ts`)
-- **Selectors:** Universal (`*`), shape name, class (`.name`), ID (`#id`) all supported
-- **Specificity:** Universal (0) < shape (1) < class (2) < ID (3)
-- **Properties:** `llm_model`, `llm_provider`, `reasoning_effort`
-- **Application order:** Explicit node attribute > stylesheet by specificity > graph default > system default
-- **Transform:** Applied after parsing, before validation (`src/transforms/stylesheet-apply.ts`)
+### Attractor Spec — Model Stylesheet (Section 8)
 
-#### Transforms and Extensibility (Spec §9, DoD §11.11)
-- **Pipeline:** parse → transform → validate sequence (`src/garden/pipeline.ts:transformAndValidate`)
-- **Variable expansion:** `$goal` replaced in prompts (`src/transforms/goal-expansion.ts`)
-- **Stylesheet application:** Model stylesheet applied as transform (`src/transforms/stylesheet-apply.ts`)
+- **Stylesheet grammar** — Selectors: *, shape, .class, #id (`src/garden/stylesheet.ts:143-165`)
+- **Specificity order** — universal=0, shape=1, class=2, id=3 (`src/garden/stylesheet.ts:33-38`)
+- **Recognized properties** — llm_model, llm_provider, reasoning_effort (`src/garden/stylesheet.ts:40`)
+- **Application precedence** — explicit node attr > stylesheet > graph default (`src/transforms/stylesheet-apply.ts`)
+- **Resolver** — Sort by specificity ASC, source order ASC, later/higher wins (`src/garden/stylesheet.ts:357-384`)
 
-#### Observability and Events (Spec §9.6)
-- **Pipeline lifecycle:** run_started, run_completed, run_interrupted, run_error events (`src/engine/events.ts`)
-- **Stage lifecycle:** node_started, node_completed, node_retrying events
-- **Edge events:** edge_selected with source, target, label, condition
-- **Parallel events:** parallel_started, parallel_branch_started, parallel_branch_completed, parallel_completed
-- **Human interaction:** human_question_presented, human_answer_received (with source: user|timeout|auto|queue)
-- **Checkpoint:** checkpoint_saved events
-- **Agent integration:** agent_session_started, agent_tool_call_started, agent_tool_call_completed, agent_loop_detected events
-- **Manager/child events:** child_run_started, child_snapshot, child_steer, run_restarted
-- **Tool hooks:** tool_hook_blocked events
-- **Auto-status:** auto_status_applied events
-- **Event consumption:** Observer/callback pattern via `engine.onEvent()`
+### Attractor Spec — Transforms (Section 9)
 
-#### Tool Call Hooks (Spec §9.7)
-- **Parsing:** `tool_hooks.pre` and `tool_hooks.post` parsed at graph and node level (`src/garden/parse.ts`)
-- **Pre-hook execution:** Shell commands run before each LLM tool call; exit code 0 = proceed, non-zero = block (`src/agent-loop/tool-hooks.ts`)
-- **Post-hook execution:** Shell commands run after each LLM tool call for logging/auditing
-- **Hook environment:** NECTAR_RUN_ID, NECTAR_NODE_ID, NECTAR_SESSION_ID, NECTAR_TOOL_CALL_ID, NECTAR_TOOL_NAME passed as environment variables
-- **Hook timeout:** 15-second timeout per hook execution
-- **Artifact persistence:** Hook metadata, stdout, stderr persisted for compliance/audit trails
-- **Node-level override:** Node tool_hooks take precedence over graph-level tool_hooks
+- **Transform interface** — name, apply(graph, context) → TransformResult (`src/transforms/types.ts:17-20`)
+- **TransformRegistry** — register, unregister, getAll, clear (`src/transforms/registry.ts`)
+- **PipelinePreparer** — Built-ins first (compose-imports, goal-expansion, stylesheet-apply), then custom (`src/garden/preparer.ts`)
+- **Goal expansion** — $goal replacement in prompts (`src/transforms/goal-expansion.ts`)
+- **Stylesheet apply** — Applies stylesheet declarations to nodes (`src/transforms/stylesheet-apply.ts`)
+- **Compose imports** — Pipeline composition via subgraph imports (`src/transforms/compose-imports.ts`)
+- **Custom transform registration** — Supported via preparer options
 
-#### Concurrency Model (Spec §3.8)
-- **Single-threaded graph traversal:** Only one node executes at a time in top-level graph ✓
-- **Parallel within handlers:** Parallel/fan-in handlers manage concurrent branches internally ✓
-- **Context isolation:** Each parallel branch receives a cloned context; only handler outcome merges back ✓
+### Attractor Spec — Condition Expression Language (Section 10)
 
-#### Child Runs and Manager Nodes (Spec §4.11)
-- **ChildRunController:** start (launches child PipelineEngine), attach (reattaches to existing), readSnapshot, writeContext, abortOwnedChild (`src/engine/child-run-controller.ts`)
-- **Manager loop:** Observe (polls child snapshot), steer (evaluates conditions, writes context notes), wait (delays between polls); cycle tracking; configurable poll interval and max cycles (`src/handlers/manager-loop.ts`)
-- **Restart chains:** loop_restart edges terminate run and re-launch; chains tracked and auto-followed by CLI (`src/engine/engine.ts`, `src/cli/commands/run.ts`)
-- **Restart depth:** max_restart_depth enforced to prevent infinite restart loops
+- **Grammar** — Clauses with AND/OR, =, != operators (`src/engine/condition-parser.ts`)
+- **Variable resolution** — `outcome`, `preferred_label`, `context.*`, `steps.*`, `artifacts.*` (`src/engine/conditions.ts`)
+- **Empty condition** — Returns true (`src/engine/conditions.ts:48-49`)
+- **Extended operators** — CONTAINS, STARTS_WITH, ENDS_WITH, <, >, <=, >=, NOT, EXISTS, || (`src/engine/condition-parser.ts`, `src/engine/conditions.ts`)
+- **Missing key behavior** — Compare as empty string (`src/engine/conditions.ts:148`)
+
+### Attractor Spec — Events (Section 9.6)
+
+- **Pipeline lifecycle** — `run_started`, `run_completed`, `pipeline_failed`, `run_interrupted`, `run_error` (`src/engine/events.ts`)
+- **Stage lifecycle** — `node_started`, `node_completed`, `stage_failed`, `node_retrying` (`src/engine/events.ts`)
+- **Parallel events** — `parallel_started`, `parallel_branch_started`, `parallel_branch_completed`, `parallel_completed` (`src/engine/events.ts`)
+- **Human interaction events** — `interview_started`, `interview_completed`, `interview_timeout`, `human_question`, `human_answer` (`src/engine/events.ts`)
+- **Checkpoint events** — `checkpoint_saved` (`src/engine/events.ts`)
+- **Goal gate events** — `goal_gate_activated` (`src/engine/events.ts`)
+- **Loop restart events** — `loop_restart` (`src/engine/events.ts`)
+- **Tool hook events** — `tool_hook_blocked` (`src/engine/events.ts`)
+- **Event listener pattern** — Supported via engine constructor
+
+### Attractor Spec — Tool Call Hooks (Section 9.7)
+
+- **Pre/post hook execution** — Around tool calls in agent sessions (`src/agent-loop/tool-hooks.ts`)
+- **Pre-hook gating** — Exit code 0 = proceed, non-zero = skip (`tool-hooks.ts:84-88`)
+- **Hook resolution** — Node-level overrides graph-level (`tool-hooks.ts:124-134`)
+
+### Attractor Spec — HTTP Server (Section 9.5)
+
+- **POST /pipelines** — Create and start a pipeline run (`src/server/routes/pipelines.ts`)
+- **GET /pipelines/:id** — Get pipeline status (`src/server/routes/pipelines.ts`)
+- **GET /pipelines/:id/events** — SSE event stream (`src/server/routes/pipelines.ts`)
+- **POST /pipelines/:id/cancel** — Cancel running pipeline (`src/server/routes/pipelines.ts:119`)
+- **GET /pipelines/:id/graph** — Graph visualization (`src/server/routes/pipelines.ts`)
+- **GET /pipelines/:id/questions** — Pending human questions (`src/server/routes/pipelines.ts`)
+- **POST /pipelines/:id/questions/:qid/answer** — Submit answer (`src/server/routes/pipelines.ts`)
+- **GET /pipelines/:id/checkpoint** — Current checkpoint (`src/server/routes/pipelines.ts:172`)
+- **GET /pipelines/:id/context** — Current context (`src/server/routes/pipelines.ts:180`)
+- **POST /pipelines/:id/resume** — Resume from checkpoint (`src/server/routes/pipelines.ts`)
 
 ---
 
-### Coding Agent Loop Spec (coding-agent-loop-spec.md)
+### Coding Agent Loop Spec — Session Architecture (Section 1-2)
 
-#### Core Agentic Loop (Spec §2, DoD §9.1)
-- **Session:** Created with provider profile and execution environment (`src/agent-loop/session.ts:AgentSession`)
-- **process_input:** Agentic loop — LLM call → tool execution → loop until natural completion
-- **Natural completion:** Model responds text-only (no tool calls) → loop exits
-- **Round limits:** `max_tool_rounds_per_input` stops loop when reached
-- **Turn limits:** `max_turns` enforced across session
-- **Abort signal:** Cancellation stops loop, kills processes, transitions to CLOSED via AbortController propagation
-- **Loop detection:** SHA256 fingerprint-based detection of repeating tool call patterns; mutation tracking to distinguish progress from loops; configurable window (5 rounds) and threshold (3 repetitions) (`src/agent-loop/loop-detection.ts`)
-- **Sequential inputs:** submit/followUp queue enables multiple inputs; follow-up limit enforced (default 10)
-- **Steering:** `steer()` queues messages injected after current tool round; `followUp()` queues for after completion
+- **Programmable-first library** — `AgentSession` class is standalone, instantiated with `UnifiedClient`, `ToolRegistry`, `ProviderProfile`, `ExecutionEnvironment`, and `SessionConfig` (`src/agent-loop/session.ts`)
+- **Session record fields** — sessionId (UUID), profile, env, config, onEvent, state, conversation, pendingSteers, pendingInputs, subagentManager
+- **SessionConfig** — max_turns (12), max_tool_rounds_per_input (10), default_command_timeout_ms (10000), max_command_timeout_ms (600000), reasoning_effort, tool_output_limits, tool_line_limits, enable_loop_detection (true), loop_detection_window (10) (`src/agent-loop/types.ts`)
+- **Session lifecycle states** — IDLE, PROCESSING, AWAITING_INPUT, CLOSED (`src/agent-loop/types.ts:3`)
+- **Core agentic loop** — `processWorkItem()` implements: check limits → build LLM request → call client.stream() → record assistant turn → check tool calls → execute tools → drain steering → loop detection (`src/agent-loop/session.ts`)
+- **Steering** — `steer()` queues messages without state restriction; drained before each LLM call as user-role messages (`session.ts:209-211, 460-462`)
+- **Follow-up** — `followUp()` queues work items processed after current input completes
+- **Reasoning effort** — Passed to client.stream() via overrides; changeable mid-session
+- **Stop conditions** — Natural completion (no tool calls), round limit, turn limit, abort signal all implemented
+- **Low-level streaming** — Session directly calls `client.stream()` and processes events manually
+- **Authentication error handling** — Auth/access errors transition session to CLOSED and reject queued follow-ups (`session.ts:577-584`)
 
-#### Session State Machine (Spec §2.3)
-- **States:** IDLE → PROCESSING → IDLE (normal); PROCESSING → AWAITING_INPUT; any → CLOSED
-- **Transitions:** All specified transitions implemented (`src/agent-loop/types.ts:SessionState`)
+### Coding Agent Loop Spec — Events (Section 2.9)
 
-#### Provider Profiles (Spec §3, DoD §9.2)
-- **OpenAI profile:** codex-rs-aligned tools including `apply_patch` (v4a format), parallel execution enabled (`src/agent-loop/provider-profiles.ts:OpenAIProfile`)
-- **Anthropic profile:** Claude Code-aligned tools including `edit_file` (old_string/new_string), parallel execution enabled (`src/agent-loop/provider-profiles.ts:AnthropicProfile`)
-- **Gemini profile:** gemini-cli-aligned tools, sequential execution (`src/agent-loop/provider-profiles.ts:GeminiProfile`)
-- **System prompts:** Provider-specific base prompts assembled with environment context, tool descriptions, and project docs
-- **Custom tools:** Registerable on top of any profile via ToolRegistry
-- **Name collision:** Latest registration wins
-- **Provider-specific guidance:** Edit format instructions, tool usage patterns
+- **agent_session_started** — Emitted by `AgentSession` exactly once per session; codergen bridges session events (`src/agent-loop/session.ts`, `src/handlers/codergen.ts`)
+- **agent_user_input** — Emitted on submit with source (submit/follow_up) (`events.ts:15-20`)
+- **agent_turn_started** — Emitted on each LLM call
+- **agent_steering_injected** — Emitted when steering message added (`events.ts:27-31`)
+- **agent_assistant_text_start** — Emitted when model starts text generation (`events.ts:33-36`)
+- **agent_text_delta** — Streaming text deltas (`events.ts:38-41`)
+- **agent_assistant_text_end** — Emitted when text generation completes (`events.ts:43-47`)
+- **agent_tool_call_started** — Before tool execution with call_id and tool_name (`events.ts:49-54`)
+- **agent_tool_call_output_delta** — Streaming tool output (`events.ts:56-63`)
+- **agent_tool_call_completed** — With `full_content` (untruncated) and `truncated` flag (`events.ts:65-75`)
+- **agent_loop_detected** — On loop detection (`events.ts:77-81`)
+- **agent_processing_ended** — When processing cycle finishes (`events.ts:83-88`)
+- **agent_turn_limit_reached** — When turn limit hit (`events.ts:90-94`)
+- **agent_warning** — For context_window_pressure and tool_output_truncated (`events.ts:96-103`)
+- **agent_error** — Error events (`events.ts:105-109`)
+- **agent_session_completed** — End of work item processing (`events.ts:111-119`)
+- **agent_session_ended** — On session close/abort (`events.ts:121-126`)
+- **context_window_warning** — At 80% threshold (`events.ts:128-134`)
+- **Subagent events** — subagent_spawned, subagent_completed, subagent_message (`events.ts:136-165`)
 
-#### Shared Core Tools (Spec §3.3)
-- **read_file:** Line-numbered content with offset/limit; binary detection; image support (`src/agent-loop/tools/read-file.ts`)
-- **write_file:** Full file writes with parent directory creation, byte count return (`src/agent-loop/tools/write-file.ts`)
-- **edit_file:** old_string/new_string exact replacement with uniqueness enforcement and diff summary (`src/agent-loop/tools/edit-file.ts`)
-- **shell:** Command execution with configurable timeout, SIGTERM/SIGKILL timeout handling, exit code/stdout/stderr separation (`src/agent-loop/tools/shell.ts`)
-- **grep:** Regex search with glob filter, .gitignore respect, binary skip (`src/agent-loop/tools/grep.ts`)
-- **glob:** File pattern matching with .gitignore respect (`src/agent-loop/tools/glob.ts`)
-- **apply_patch:** v4a format (OpenAI-specific) with add/delete/update/move operations; transactional application; context matching with fuzzy search; line ending preservation; path traversal prevention (`src/agent-loop/tools/apply-patch.ts`, `src/agent-loop/patch.ts`)
+### Coding Agent Loop Spec — Loop Detection (Section 2.10)
 
-#### Subagent Tools (Spec §7, DoD §9.9)
-- **spawn_agent:** Spawns child with scoped task, optional model override, turn limits, timeout (`src/agent-loop/tools/spawn-agent.ts`)
-- **send_input:** Sends steering (PROCESSING state) or follow-up (IDLE state) to running child (`src/agent-loop/tools/send-input.ts`)
-- **wait:** Blocks until child(ren) complete and returns results; supports single or array of agent_ids (`src/agent-loop/tools/wait.ts`)
-- **close_agent:** Terminates a subagent and returns final status (`src/agent-loop/tools/close-agent.ts`)
-- **Shared environment:** Children share parent's execution environment (same filesystem)
-- **Independent history:** Each child gets own Session with independent conversation
-- **Depth limiting:** `max_subagent_depth` prevents recursive spawning (default 1) (`src/agent-loop/subagent-manager.ts`)
-- **Concurrency limiting:** `max_concurrent_children` prevents resource exhaustion (default 4)
-- **Child tool isolation:** Subagent tools excluded from child registries
+- **LoopDetector** — SHA256 fingerprinting of tool name + args, pattern detection for repeating sequences of length 1-3 within configurable window, steering injection on detection, termination after 3 detections (`src/agent-loop/loop-detection.ts`)
 
-#### Tool Execution (Spec §3.8, DoD §9.3)
-- **ToolRegistry dispatch:** Lookup by name → validate → execute → truncate → emit → return (`src/agent-loop/tool-registry.ts`)
-- **Unknown tools:** Error result returned to LLM (not exception)
-- **Argument validation:** JSON Schema validation via AJV
-- **Error results:** Caught and returned as `is_error = true`
-- **Parallel execution:** Supported when profile's `supports_parallel_tool_calls` is true; intelligent partitioning of read-only vs mutating calls; read-only concurrent, mutating sequential; order preserved (`src/llm/tools.ts:executeToolsBatch`)
-- **Tool safety classification:** Read-only vs mutating categorization per tool
+### Coding Agent Loop Spec — Provider Profiles (Section 3)
 
-#### Execution Environment (Spec §4, DoD §9.4)
-- **LocalExecutionEnvironment:** File operations, command execution, search, metadata (`src/agent-loop/execution-environment.ts`)
-- **Command timeout:** Default configurable, overridable per-call
-- **Timeout handling:** SIGTERM → wait → SIGKILL; exit code 124 for timeout, 130 for abort
-- **Env var filtering:** Allowlist/denylist with sensitive variable exclusion (`*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`)
-- **Interface:** Implementable by consumers for custom environments (Docker, K8s, WASM, SSH)
-- **Workspace boundary:** Path resolution with symlink detection and escape prevention
-- **Scoped environments:** Subdirectory isolation for child agents
+- **AnthropicProfile** — edit_file native, 120s timeout, read_file/write_file/edit_file/shell/grep/glob tools (`provider-profiles.ts`)
+- **OpenAIProfile** — apply_patch instead of edit_file, read_file/write_file/apply_patch/shell/grep/glob (`provider-profiles.ts`)
+- **GeminiProfile** — Extended with read_many_files/list_dir, sequential tool execution (`provider-profiles.ts`)
+- **ProviderProfile interface** — name, systemPrompt(), defaultModel, parallel_tool_execution, max_parallel_tools, visibleTools, command_timeout_ms, `providerOptions()` (`provider-profiles.ts`)
 
-#### Tool Output Truncation (Spec §5, DoD §9.5)
-- **Character-based first:** Head/tail split runs on all tool outputs; 80/20 head/tail ratio (`src/agent-loop/truncation.ts`)
-- **Line-based second:** Per-tool line caps (shell: 256, grep: 200, glob: 500) applied after character truncation
-- **Truncation marker:** Visible `[... truncated N lines ...]` message
-- **Full output preserved:** In artifacts and TOOL_CALL_END events via `full_content` field
-- **Default character limits:** read_file: 50K, shell: 30K, grep: 20K, glob: 10K, edit_file: 10K, write_file: 1K (`src/agent-loop/types.ts:TOOL_OUTPUT_LIMITS`)
-- **Overridable:** Via session config
+### Coding Agent Loop Spec — Tool Definitions (Section 3.3-3.6)
 
-#### System Prompts and Environment Context (Spec §6, DoD §9.8)
-- **Provider-specific base:** Each profile supplies native base prompt with tool-specific guidance
-- **Environment context:** Platform, shell, working dir, date, model info (`src/agent-loop/environment-context.ts:buildEnvironmentContext`)
-- **Git context:** Branch, status summary (staged/unstaged/untracked counts), recent commits; cached once per session; 2-second timeout per git command (`src/agent-loop/environment-context.ts:buildGitSnapshot`)
-- **Project docs:** AGENTS.md + provider-specific files (CLAUDE.md, GEMINI.md, .codex/instructions.md) discovered and loaded with 32KB budget (`src/agent-loop/project-instructions.ts`)
-- **Provider-specific loading:** Only relevant docs loaded per profile (Anthropic loads CLAUDE.md, not GEMINI.md)
-- **Budget enforcement:** Least-specific files removed first when exceeding 32KB
+- **read_file** — path (required), offset, limit; line-numbered output; binary detection (`src/agent-loop/tools/read-file.ts`)
+- **write_file** — path, content; creates parent dirs; returns bytes written (`src/agent-loop/tools/write-file.ts`)
+- **edit_file** — path, old_string, new_string, replace_all; exact match with fuzzy fallback; multiple-match error (`src/agent-loop/tools/edit-file.ts`)
+- **shell** — command, timeout_ms, description; returns stdout/stderr/exit code; includes spec-matching timeout guidance message (`src/agent-loop/tools/shell.ts:41`)
+- **grep** — pattern, path, include (glob filter), case_insensitive, max_results (`src/agent-loop/tools/grep.ts`)
+- **glob** — pattern, path; gitignore-aware (`src/agent-loop/tools/glob.ts`)
+- **apply_patch (OpenAI)** — v4a format parser/applier with Add/Update/Delete/Move (`src/agent-loop/tools/apply-patch.ts`, `src/agent-loop/patch.ts`)
+- **read_many_files (Gemini)** — Batch reading up to 20 files (`src/agent-loop/tools/read-many-files.ts`)
+- **list_dir (Gemini)** — Directory listing with configurable depth (`src/agent-loop/tools/list-dir.ts`)
+- **spawn_agent** — Creates child session with task, working_dir, model override, max_tool_rounds, timeout_ms; result uses standard truncateToolOutput with 20k limit (`src/agent-loop/tools/spawn-agent.ts`, `src/agent-loop/subagent-manager.ts`)
 
-#### Reasoning Effort (Spec §2.7, DoD §9.7)
-- **Passed through:** To LLM SDK Request via `reasoning_effort` field
-- **Mid-session changes:** Take effect on next LLM call via session overrides
-- **Valid values:** "low", "medium", "high", null (provider default)
+### Coding Agent Loop Spec — Tool Registry (Section 3.8)
 
-#### Event System (Spec §2.9, DoD §9.10)
-- **Agent events:** session_started, turn_started, text_delta, tool_call_started, tool_call_completed, loop_detected, session_completed (`src/agent-loop/events.ts`)
-- **Subagent events:** subagent_spawned, subagent_completed, subagent_message (with direction and message type)
-- **TOOL_CALL_END:** Full untruncated output via artifact path and content preview
-- **Session lifecycle:** Start/end events bracket sessions with metrics (turn count, tool call count, usage)
-- **Delivery:** Via `AgentEventListener` callback
+- **ToolRegistry** — register(), unregister(), definitions(), definitionsForProfile(), execute() with AJV validation (`src/agent-loop/tool-registry.ts`)
+- **Unknown tool handling** — Returns error result
+- **Validation failure** — Returns error result with details
+- **Custom registration** — Latest registration wins (Map.set semantics)
+- **Tool safety classification** — TOOL_SAFETY map classifies tools as read_only or mutating (`src/agent-loop/types.ts`)
 
-#### Tool Hooks (Spec §9.7 cross-ref)
-- **Pre/post hooks:** Shell commands around each LLM tool call (`src/agent-loop/tool-hooks.ts`)
-- **Pre-hook gating:** Non-zero exit blocks tool execution; event emitted
-- **Post-hook auditing:** Runs after completion with result metadata
-- **Metadata:** Run ID, node ID, session ID, tool call ID, tool name, arguments, duration, content preview
-- **Artifact persistence:** Hook results persisted for compliance/audit
+### Coding Agent Loop Spec — Execution Environment (Section 4)
 
-#### Transcript (Spec-adjacent)
-- **Full recording:** Prompts, responses, tool calls, status persisted (`src/agent-loop/transcript.ts`)
-- **Per-tool artifacts:** Each tool call stored with request.json, result.json, full-result.txt
-- **Nested hierarchy:** Subagent transcripts nested under parent
-- **Shell output:** STDOUT/STDERR split into separate log files
+- **ExecutionEnvironment interface** — readFile, writeFile, fileExists, exec, glob, grep, list_directory, initialize(), cleanup(), platform(), os_version(), scoped(), workspaceRoot, cwd, resolvePath, deleteFile, renameFile (`src/agent-loop/execution-environment.ts`)
+- **ExecResult** — stdout, stderr, exitCode, timed_out, duration_ms fields all present (`execution-environment.ts`)
+- **LocalExecutionEnvironment** — All file ops, command execution with timeout, SIGTERM + 2s + SIGKILL via execa forceKillAfterDelay, abort signal support (`execution-environment.ts`)
+- **Environment variable filtering** — Drops `*_API_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`, `*_CREDENTIAL`; keeps PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR, LC_*, NECTAR_*, and language-specific paths (GOPATH, CARGO_HOME, RUSTUP_HOME, NVM_DIR, VOLTA_HOME, PYENV_ROOT, VIRTUAL_ENV, PNPM_HOME, ASDF_DIR) (`execution-environment.ts:32-64`)
+- **Scoped environments** — `scoped(subdir)` returns new env with different cwd, same workspaceRoot
+- **Command timeout defaults** — SessionConfig default 10s (`types.ts:22`); Anthropic profile overrides to 120s per Claude Code convention (`provider-profiles.ts:58`); max 600s (`types.ts:24`)
+
+### Coding Agent Loop Spec — Truncation (Section 5)
+
+- **Character-based truncation** — 50/50 head/tail split with `[WARNING: Tool output was truncated. N characters were removed from the middle...]` marker (`src/agent-loop/truncation.ts:15-39`)
+- **Two-pass truncation** — Character truncation first, then line cap second (`truncation.ts:46-77`)
+- **Line truncation head/tail split** — Line cap uses head/tail split with `[... N lines omitted ...]` marker (`truncation.ts:66-71`)
+- **Default char limits** — read_file: 50000, read_many_files: 120000, list_dir: 40000, shell: 30000, grep: 20000, glob: 20000, write_file: 1000, edit_file: 10000, apply_patch: 10000, spawn_agent: 20000 (`types.ts`)
+- **Default line limits** — shell: 256, grep: 200, glob: 500, read_many_files: 1000, list_dir: 800 (`truncation.ts`)
+- **Overridable limits** — Both tool_output_limits and tool_line_limits on SessionConfig merge with defaults
+- **Command timeouts** — Default 10s, per-call override via timeout_ms, capped by max_command_timeout_ms; Anthropic profile 120s
+
+### Coding Agent Loop Spec — Context Window Awareness (Section 5.5)
+
+- **Token estimation** — chars/4 heuristic
+- **Warning threshold** — 80% of context window triggers `context_window_warning` event (`session.ts`)
+
+### Coding Agent Loop Spec — System Prompt (Section 6)
+
+- **Layered system prompt** — Base instructions from profile + environment context block + git snapshot + project instructions
+- **Environment context block** — Platform, shell, workspace, date, provider, model, tools, OS version, knowledge cutoff, "Is git repository" flag (`src/agent-loop/environment-context.ts`)
+- **Project document discovery** — Discovers AGENTS.md (always) + provider-specific files (CLAUDE.md, GEMINI.md, .codex/instructions.md); 32KB budget; sorted by specificity (`src/agent-loop/project-instructions.ts`)
+
+### Coding Agent Loop Spec — Subagents (Section 7)
+
+- **spawn_agent tool** — Creates child session with task, working_dir, model override, max_tool_rounds, timeout_ms (`src/agent-loop/tools/spawn-agent.ts`)
+- **send_input / wait / close_agent** — Full lifecycle management (`src/agent-loop/subagent-manager.ts`)
+- **SubagentManager** — Depth limit (default: 1), concurrency limit, child gets own session sharing parent's execution environment (`src/agent-loop/subagent-manager.ts`)
+- **Parallel tool execution** — `executeToolsBatch()` when profile.parallel_tool_execution is true (`session.ts`)
+
+### Coding Agent Loop Spec — Tool Hooks
+
+- **Pre/post execution hooks** — Metadata includes run_id, node_id, session_id, tool_call_id (`src/agent-loop/tool-hooks.ts`)
+
+### Coding Agent Loop Spec — Transcript/Logging
+
+- **TranscriptWriter** — Writes prompt, response, status, and per-tool-call artifacts to disk (`src/agent-loop/transcript.ts`)
 
 ---
 
-### Unified LLM Client Spec (unified-llm-spec.md)
+### Unified LLM Spec — Architecture (Section 2)
 
-#### Core Infrastructure (Spec §2, DoD §8.1)
-- **Client from env:** `UnifiedClient.from_env()` reads standard env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY) (`src/llm/client.ts`)
-- **Programmatic construction:** Explicit adapter registration with Map<string, ProviderAdapter>
-- **Provider routing:** Requests dispatched to correct adapter based on provider field
-- **Default provider:** Used when provider omitted; priority: anthropic > openai > gemini > simulation
-- **ConfigurationError:** Raised when no provider configured and no default set (`src/llm/errors.ts`)
-- **Middleware chain:** Full middleware interface with `generate()` and `stream()` hooks; registration-order execution for requests, reverse for responses; method chaining via `use()` (`src/llm/middleware.ts`)
-- **Module-level default client:** `setDefaultClient()`, `getDefaultClient()`, `clearDefaultClient()`, lazy initialization from env on first use (`src/llm/client.ts`)
-- **Model catalog:** Populated with current models across all providers (Anthropic, OpenAI, Gemini); `getModelInfo()`, `listModels()`, `getLatestModel()`, `resolveModelSelector()` (`src/llm/catalog.ts`)
-- **Model capabilities:** Streaming, tool_calling, structured_output, vision, thinking tracked per model
-- **Cost tracking:** Input/output per million tokens; cache read cost where applicable
-- **Logical selectors:** default, fast, reasoning per provider
+- **Four-layer architecture** — Layer 1 (ProviderAdapter interface) in `src/llm/adapters/types.ts`, Layer 2 (utilities) in streaming/rate-limit/timeouts/errors, Layer 3 (UnifiedClient) in `src/llm/client.ts`, Layer 4 (high-level functions) generate/stream/generateObject/streamObject
+- **Client.from_env()** — Reads ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENAI_COMPATIBLE_BASE_URL, GEMINI_API_KEY/GOOGLE_API_KEY (`client.ts`)
+- **Programmatic setup** — Constructor accepts Map of providers (`client.ts`)
+- **Provider resolution** — Resolves provider from model or uses defaultProvider; throws on misconfiguration (`client.ts`)
+- **Model string convention** — Provider-native strings used directly (claude-opus-4-20250514, gpt-4.1, gemini-2.5-pro)
+- **Module-level default client** — `setDefaultClient()`, `getDefaultClient()`, lazy initialization; throws `ConfigurationError` when no real providers configured (`client.ts:585-592`)
+- **Native API usage** — OpenAI Responses API (`/v1/responses`), Anthropic Messages API (`/v1/messages`), Gemini native generateContent (`/v1beta/models/*/generateContent`)
 
-#### Provider Adapters (Spec §7, DoD §8.2)
-- **OpenAI:** Uses native **Responses API** (`/v1/responses`) — NOT Chat Completions (`src/llm/adapters/openai.ts`)
-- **Anthropic:** Uses native **Messages API** (`/v1/messages`) with version 2023-06-01 (`src/llm/adapters/anthropic.ts`)
-- **Gemini:** Uses native **Gemini API** (`/v1beta/models/*/generateContent`) (`src/llm/adapters/gemini.ts`)
-- **Authentication:** API keys from env vars or explicit config; per-provider header format (Bearer, x-api-key, query param)
-- **complete():** Sends request, returns unified GenerateResponse
-- **stream():** Returns async iterator of StreamEvent objects
-- **System message handling:** Per-provider extraction (OpenAI: instructions param, Anthropic: system param, Gemini: systemInstruction)
-- **Role translation:** All 5 roles (SYSTEM, USER, ASSISTANT, TOOL, DEVELOPER) translated correctly per provider
-- **provider_options:** Escape hatch passes through provider-specific params (anthropic: thinking/beta_headers; openai: store/metadata; gemini: safetySettings)
-- **Beta headers:** Anthropic `anthropic-beta` header built automatically for thinking and caching features
-- **Error translation:** HTTP status codes mapped to error hierarchy per provider
+### Unified LLM Spec — Middleware (Section 2.3)
 
-#### Data Model (Spec §3, DoD §8.3)
-- **Roles:** system, user, assistant, tool, developer (`src/llm/types.ts`)
-- **ContentPart:** text, image (base64/url), tool_call, tool_result, thinking (with signature), redacted_thinking
-- **Image input:** ImageSource type defined for multimodal support (base64 and URL)
-- **Tool call round-trip:** assistant→tool_call→tool_result→assistant cycle works across all providers
-- **Thinking blocks:** Anthropic thinking blocks preserved with signatures; redacted thinking passed through verbatim
-- **Usage:** input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens
-- **RateLimitInfo:** Parsed from response headers (`src/llm/rate-limit.ts`), included on GenerateResponse
-- **ResponseFormat:** text, json, json_schema with strict flag
+- **Middleware/interceptor pattern** — `composeGenerateChain` and `composeStreamChain` with correct onion ordering, supports both generate and stream paths (`src/llm/middleware.ts`)
 
-#### Generation (Spec §4, DoD §8.4)
-- **generate():** Non-streaming generation via `generateUnified()` (`src/llm/client.ts`)
-- **stream():** Yields StreamEvent objects with content deltas
-- **generateObject\<T\>():** Structured output with JSON Schema validation and retry loop (max_validation_retries, default 2) (`src/llm/client.ts`)
-- **streamObject\<T\>():** Streaming structured output with on-the-fly JSON parsing (`src/llm/client.ts`)
-- **Simulation provider:** Returns schema-minimal objects for testing; generates simulated thinking when reasoning_effort set (`src/llm/simulation.ts`)
-- **Structured output per provider:** OpenAI: native json_schema; Anthropic: synthetic `__structured_output` tool with forced tool_choice; Gemini: responseMimeType + responseSchema
+### Unified LLM Spec — Data Model (Section 3)
 
-#### Streaming (Spec §3.13-3.14, §4.2)
-- **StreamEvent types:** stream_start, content_delta, tool_call_delta, thinking_delta, usage, stream_end, error (`src/llm/streaming.ts`)
-- **SSE parsing:** Shared SSE parser for all providers with proper line buffering and abort signal support (`src/llm/streaming.ts:parseSSEStream`)
-- **OpenAI streaming:** Responses API events (response.created, output_text.delta, function_call_arguments.delta, output_item.done, response.completed)
-- **Anthropic streaming:** content_block_start/delta/stop events for text, tool_use, and thinking
-- **Gemini streaming:** SSE via `?alt=sse` query parameter; function calls emitted as complete objects
+- **Role** — 5 roles: system, user, assistant, tool, developer (`types.ts:3`)
+- **Role mapping completeness** — Anthropic: DEVELOPER→merged with system; Gemini: DEVELOPER→merged with systemInstruction; OpenAI: DEVELOPER→native developer role
+- **ContentPart types** — TEXT, IMAGE, AUDIO, DOCUMENT, TOOL_CALL, TOOL_RESULT, THINKING, REDACTED_THINKING all defined as tagged unions (`types.ts`)
+- **Message factory methods** — `Message.system()`, `Message.user()`, `Message.assistant()`, `Message.tool_result()` static constructors (`types.ts`)
+- **FinishReason** — Unified `FinishReasonValue` enum ("stop", "length", "tool_calls", "content_filter", "error", "other") with `normalizeFinishReason()` mapping from provider-specific values (`types.ts`)
+- **Content data structures** — ImageSource, AudioData, DocumentData, ToolCallContentPart, ToolResultContentPart, ThinkingContentPart, RedactedThinkingContentPart
+- **GenerateRequest** — model, messages/prompt (mutually exclusive), provider, tools, tool_choice, `max_tool_rounds` (default 1), max_tokens, temperature, top_p, stop_sequences, reasoning_effort, system, abort_signal, timeout, provider_options, response_format (`types.ts`, `client.ts`)
+- **Provider options escape hatch** — AnthropicOptions, OpenAIOptions, OpenAICompatibleOptions, GeminiOptions (`types.ts`)
+- **GenerateResponse** — message, usage, stop_reason, model, provider, rate_limit, id, raw, warnings fields; `.text`, `.tool_calls`, `.reasoning` convenience accessors (`types.ts`)
+- **Usage** — input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens with addition utility (`types.ts`, `client.ts`)
+- **ResponseFormat** — text, json, json_schema with JsonSchemaDefinition including strict mode (`types.ts`)
+- **RateLimitInfo** — requests_remaining, requests_limit, tokens_remaining, tokens_limit, reset_at (`types.ts`)
+- **ToolCallData** — id, name, arguments fields; Gemini adapter generates synthetic IDs (`call_N` pattern)
+- **Thinking block preservation** — Anthropic thinking blocks round-tripped with signature; redacted thinking blocks passed through
 
-#### Reasoning Tokens (Spec §3.9, DoD §8.5)
-- **OpenAI:** reasoning_effort mapped to `reasoning.effort` in Responses API; reasoning_tokens from `output_tokens_details.reasoning_tokens`
-- **Anthropic:** Extended thinking via `thinking` parameter with budget mapping (low=1024, medium=4096, high=16384); thinking blocks returned as content parts with signature; cache breakpoints on thinking-enabled requests
-- **Gemini:** thinkingConfig with thinkingBudget mapped from reasoning_effort; thoughtsTokenCount mapped to reasoning_tokens; thought parts (thought=true) tracked
-- **Usage:** reasoning_tokens distinct from output_tokens across all providers
+### Unified LLM Spec — Streaming (Section 3.13-3.14)
 
-#### Prompt Caching (Spec §2.10, DoD §8.6)
-- **OpenAI:** cache_read_tokens extracted from `usage.input_tokens_details.cached_tokens` (automatic, no client action)
-- **Anthropic:** Explicit cache_control injection via `injectCacheBreakpoints()` on system prompt, tools, and conversation prefix; `prompt-caching-2024-07-31` beta header included automatically; cache_read_tokens and cache_write_tokens populated from usage (`src/llm/adapters/anthropic.ts`)
-- **Gemini:** cache_read_tokens extracted from `usageMetadata.cachedContentTokenCount` (automatic)
+- **StreamEvent types** — stream_start, text_start, content_delta, text_end, tool_call_start, tool_call_delta, tool_call_end, thinking_start, thinking_delta, thinking_end, usage, step_finish, stream_end (with required full response), error (`src/llm/streaming.ts`)
+- **Start/delta/end pattern** — Full lifecycle for text (text_start → content_delta → text_end) and tool calls (tool_call_start → tool_call_delta → tool_call_end) (`streaming.ts`)
+- **SSE parsing** — Handles event/data lines, comments, blank line boundaries, multi-line data (`streaming.ts`)
 
-#### Tool Calling (Spec §5, DoD §8.7)
-- **Tool definitions:** Name, description, input_schema (JSON Schema) (`src/llm/tools.ts`)
-- **ToolChoice:** auto, none, required, named modes; per-provider translation (Anthropic: none = omit tools; OpenAI: named = function wrapper; Gemini: named = ANY with allowed_function_names)
-- **Parallel execution:** Concurrent execution with intelligent read-only/mutating partitioning; bounded parallelism (`src/llm/tools.ts:executeToolsBatch`)
-- **Error handling:** Tool errors sent to model as error results (`is_error = true`)
-- **Validation:** JSON Schema validation via AJV before execution (`src/llm/structured.ts`)
-- **Per-provider translation:** Tool definition format translated per provider (OpenAI: function wrapper, Anthropic: input_schema, Gemini: functionDeclarations)
+### Unified LLM Spec — Generation API (Section 4)
 
-#### Error Handling and Retry (Spec §6, DoD §8.8)
-- **Error hierarchy:** LLMError → AuthenticationError (401), RateLimitError (429), OverloadedError (503), InvalidRequestError (400), ContextWindowError, ContentFilterError, NetworkError, TimeoutError, ConfigurationError, StructuredOutputError (`src/llm/errors.ts`)
-- **Retryable flags:** Set correctly per error type (429, 503, timeout = retryable; 401, 400, 403, 404 = non-retryable)
-- **Exponential backoff:** Base 200ms, factor 2x, max 60s, jitter 0.5-1.0x (`src/llm/retry.ts`)
-- **Retry-After:** Parsed from headers (seconds or HTTP-date), respected by retry middleware (`src/llm/errors.ts:parseRetryAfterMs`)
-- **Retry middleware:** Wraps adapter; only retries retryable errors; streaming only retries before content delivery; configurable max_retries (default 3)
-- **Rate limit headers:** Multi-provider format parsing (x-ratelimit-*, anthropic-ratelimit-*) (`src/llm/rate-limit.ts`)
-- **StructuredOutputError:** Includes raw text, validation errors, schema, and parse error for debugging
+- **generate()** — Module-level function with tool execution loop and `prompt` string shorthand via `normalizePromptRequest()` (`client.ts`)
+- **stream()** — Module-level function returning StreamResult with AsyncIterable<StreamEvent>, built-in tool loop via `streamWithToolLoop()` (`client.ts`)
+- **generateObject()** — Structured output with JSON schema validation, validation retries, StructuredOutputError on failure (`client.ts` — `UnifiedClient.generateObject()`)
+- **streamObject()** — Streaming structured output with incremental JSON parsing (`client.ts` — `UnifiedClient.streamObject()`)
+- **Incremental JSON parsing** — Full implementation (`src/llm/incremental-json.ts`)
+- **GenerateResult / StepResult** — `GenerateResult` with `total_usage`, `steps: List<StepResult>`, `output`; `StepResult` with response and usage (`client.ts`)
+- **StreamResult wrapper** — `.response()`, `.text_stream`, `.partial_response` accessors (`client.ts`)
+- **StreamAccumulator** — Collects stream events into a complete Response with `partial_response` getter and `response()` method (`src/llm/stream-accumulator.ts`)
+- **stop_when / StopCondition** — Custom stop condition callback for the tool loop on GenerateRequest (`client.ts`)
+- **Cancellation / abort signals** — Supported via abort_signal on GenerateRequest, threaded through all adapters
+- **Image file path support** — Reads local files, infers MIME type, base64-encodes, validates size (`client.ts`)
+
+### Unified LLM Spec — Timeouts (Section 4.7)
+
+- **Timeout config** — connect (10s), request (120s), stream_read (30s) defaults matching spec (`src/llm/timeouts.ts`, `types.ts`)
+
+### Unified LLM Spec — Tool Calling (Section 5)
+
+- **ToolDefinition** — name, description, input_schema, optional `execute` handler (`ToolExecuteHandler`); `ActiveToolDefinition` (has execute) vs `PassiveToolDefinition` (no execute) with `isActiveTool()`/`isPassiveTool()` helpers (`src/llm/tools.ts`)
+- **ToolContext injection** — Handlers receive `ToolContext` with `messages`, `abort_signal`, `tool_call_id` (`src/llm/tools.ts`)
+- **ToolChoice** — auto, none, required, named with correct provider mappings across all adapters (`tools.ts`)
+- **Parallel tool execution** — `executeToolsBatch` with concurrent execution, order preservation, bounded parallelism (`tools.ts`)
+- **Tool error handling** — Unknown tools return error result, JSON parse errors return error, exceptions return is_error=true (`client.ts`)
+
+### Unified LLM Spec — Error Handling (Section 6)
+
+- **Error taxonomy** — LLMError base with error_code and raw fields, AuthenticationError (401), AccessDeniedError (403), NotFoundError (404), RateLimitError (429), QuotaExceededError, StreamError, OverloadedError (503), ServerError (500-504), InvalidRequestError (400), ContextWindowError, ContentFilterError, NetworkError, TimeoutError, AbortError, ConfigurationError, StructuredOutputError, InvalidToolCallError, UnsupportedToolChoiceError (`src/llm/errors.ts`)
+- **Retryability classification** — Correct retryable flags per spec on each error class
+- **Retry-After header parsing** — Handles both seconds and HTTP-date formats (`errors.ts`)
+- **Error classification by provider** — All three adapters correctly classify 401→AuthenticationError, 403→AccessDeniedError, 404→NotFoundError, 429→RateLimitError, 5xx→ServerError, context window→ContextWindowError
+
+### Unified LLM Spec — Retry Logic (Section 6.6)
+
+- **Exponential backoff with jitter** — `createRetryMiddleware` with max_retries=2, base_delay_ms=1000, max_delay_ms=60000, jitter=true matching spec defaults (`src/llm/retry.ts:15-20`)
+- **Retry-After honor** — Retry-After overrides calculated backoff when within max_delay (`retry.ts:26-29`)
+- **No retry after partial stream delivery** — yieldedContent flag checked before retry (`retry.ts:149`)
+- **Rate limit header parsing** — Parses x-ratelimit- and anthropic-ratelimit- headers (`src/llm/rate-limit.ts`)
+
+### Unified LLM Spec — Provider Adapters (Section 7)
+
+- **OpenAI adapter** — Responses API format, reasoning_effort → reasoning.effort, cache tokens from input_tokens_details.cached_tokens, stop_sequences mapped to stop parameter (`src/llm/adapters/openai.ts:242`)
+- **Anthropic adapter** — Messages API, system extraction, max_tokens default 4096, thinking block round-trip with signature, consecutive same-role message merging (`src/llm/adapters/anthropic.ts:90`), cache_control auto-injection, reasoning_effort → thinking.budget_tokens
+- **Gemini adapter** — Native generateContent, synthetic tool call IDs, function response by name, reasoning_effort → thinkingConfig.thinkingBudget, thoughtsTokenCount → reasoning_tokens (`src/llm/adapters/gemini.ts`)
+- **OpenAI-Compatible adapter** — Chat Completions format (/v1/chat/completions), structured output fallback, reasoning token extraction (`src/llm/adapters/openai-compatible.ts`)
+- **Beta headers (Anthropic)** — Auto-adds interleaved-thinking and prompt-caching; configurable via provider_options.anthropic.betas
+
+### Unified LLM Spec — Prompt Caching (Section 2.10)
+
+- **OpenAI** — Automatic via Responses API; cache_read_tokens populated from cached_tokens (`openai.ts`)
+- **Anthropic** — cache_control blocks auto-injected; prompt-caching beta header included; cache_read_tokens and cache_write_tokens populated (`anthropic.ts`)
+- **Gemini** — Automatic prefix caching; cachedContentTokenCount mapped to cache_read_tokens (`gemini.ts`)
+
+### Unified LLM Spec — Reasoning Tokens (Section 3.9)
+
+- **OpenAI** — reasoning_tokens from output_tokens_details.reasoning_tokens via Responses API (`openai.ts`)
+- **Anthropic** — Thinking blocks returned as THINKING content parts; signature preserved for round-trip (`anthropic.ts`)
+- **Gemini** — thoughtsTokenCount mapped to reasoning_tokens (`gemini.ts`)
+- **Usage.reasoning_tokens** — Distinct from output_tokens across all providers (`types.ts`)
+
+### Unified LLM Spec — Model Catalog (Section 2.9)
+
+- **ModelInfo record** — flat spec fields (`supports_*`, `input_cost_per_million`, `output_cost_per_million`, `cache_read_cost_per_million`) with one-sprint compatibility aliases for nested `capabilities`/`cost` (`src/llm/catalog.ts`)
+- **Lookup functions** — `getModelInfo()`, `listModels()`, `getLatestModel()` all exported (`catalog.ts:269-291`)
+- **Model entries** — Anthropic (claude-opus-4-20250514, claude-sonnet-4-20250514, claude-haiku-4-5-20251001), OpenAI (o3, o3-mini, o4-mini, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o), Gemini (gemini-2.5-pro, gemini-2.5-flash)
+
+### Unified LLM Spec — Other
+
+- **Simulation provider** — Deterministic responses, schema-aware generation, streaming simulation (`src/llm/simulation.ts`)
+- **Structured output validation** — AJV-based JSON schema validation (`src/llm/structured.ts`)
 
 ---
 
 ## GAPS
 
-### Attractor Spec Gaps
+No remaining implementation gaps were identified against the pinned attractor, coding-agent-loop, and unified-llm specs in this sprint snapshot.
 
-#### GAP-A1: Custom Transform Registration API — Spec §9.3
+Sprint 031 closures:
 
-The pipeline uses a fixed transform chain (goal expansion → stylesheet application). There is no public API for registering custom transforms that run in defined order after built-in transforms. The spec states "Implementations may register custom transforms" with `runner.register_transform(MyCustomTransform())`.
-
-**Missing:**
-- `registerTransform(transform)` API on pipeline or runner
-- Custom transform ordering after built-in transforms
-
-**Severity:** Low — extensibility point, not a core feature.
-
-#### GAP-A2: HTTP Server Mode — Spec §9.5
-
-The HTTP server mode with REST endpoints for remote pipeline management is not implemented. The spec defines endpoints for: POST /pipelines, GET /pipelines/{id}, GET /pipelines/{id}/events (SSE), POST /pipelines/{id}/cancel, GET /pipelines/{id}/graph (SVG), GET/POST /pipelines/{id}/questions, GET /pipelines/{id}/checkpoint, GET /pipelines/{id}/context.
-
-**Note:** The spec qualifies this with "Implementations may expose..." and the DoD §11.11 says "HTTP server mode (if implemented)", making this explicitly optional.
-
-**Severity:** Low — optional per spec.
-
-#### GAP-A3: Interviewer `ask_multiple()` and `inform()` Methods — Spec §6.1
-
-The Interviewer interface specifies three methods: `ask()`, `ask_multiple()`, and `inform()`. Only `ask()` is implemented. `ask_multiple()` (batch questions) and `inform()` (one-way status messages) are not present.
-
-**Missing:**
-- `ask_multiple(questions: List<Question>) -> List<Answer>` method on Interviewer interface
-- `inform(message: String, stage: String) -> Void` method on Interviewer interface
-
-**Severity:** Low — `ask()` covers the primary use case; `ask_multiple` is a convenience; `inform` is informational only.
-
----
-
-### Unified LLM Client Spec Gaps
-
-#### GAP-L1: OpenAI-Compatible Endpoints Adapter — Spec §7.10
-
-No `OpenAICompatibleAdapter` for third-party Chat Completions endpoints (vLLM, Ollama, Together AI, Groq, etc.). The spec distinguishes this from the primary OpenAI adapter which uses the Responses API.
-
-**Missing:**
-- `OpenAICompatibleAdapter` class using Chat Completions endpoint (`/v1/chat/completions`)
-- Chat Completions streaming format handling (`data: [DONE]`)
-
-**Severity:** Medium — blocks third-party LLM endpoint support, but all three major providers (OpenAI, Anthropic, Gemini) work via their native APIs.
-
-#### GAP-L2: High-Level `generate()` with Built-In Tool Execution Loop — Spec §4.3, DoD §8.7
-
-The Unified LLM Client spec defines a Layer 4 `generate()` function with `max_tool_rounds` that automatically executes active tools and loops until natural completion. The current `generate()` is a simple delegation to `generateUnified()` without a built-in tool execution loop. The `GenerateResult` and `StepResult` types from the spec are not implemented in the LLM client.
-
-**Note:** Tool execution looping is fully implemented in the agent-loop module (`src/agent-loop/session.ts`) which uses the lower-level `Client.complete()` directly — this is the architecture the coding-agent-loop-spec explicitly recommends ("The agent loop uses the SDK's low-level Client.complete() and Client.stream() methods directly, implementing its own turn loop"). The gap is only relevant for standalone LLM client use without the agent loop.
-
-**Missing:**
-- `max_tool_rounds` parameter on `generate()`
-- Automatic tool execution loop in `generate()` for active tools
-- `GenerateResult` and `StepResult` types
-
-**Severity:** Low — the agent loop handles this at a higher level, which is the spec-recommended architecture. Standalone users can use `generateUnified()` in their own loop.
-
----
-
-### Coding Agent Loop Spec Gaps
-
-No material gaps identified. The agent-loop module (`src/agent-loop/`) implements all Definition of Done items from Spec §9.1-9.11:
-
-- Core loop with all stop conditions ✓
-- Three provider profiles (OpenAI/Anthropic/Gemini) with native toolsets ✓
-- Full tool execution pipeline with registry, validation, truncation ✓
-- LocalExecutionEnvironment with all file/command operations ✓
-- Steering and follow-up queues ✓
-- Subagent spawning with depth limiting ✓
-- Complete event system ✓
-- Tool output truncation (character-first, then line-based) ✓
-- Project instruction discovery ✓
-- System prompt construction ✓
-- Reasoning effort support ✓
-- Loop detection ✓
-- Tool hooks (pre/post) ✓
-
----
-
-## Summary
-
-| Spec | Implemented | Gaps | Gap IDs |
-|------|------------|------|---------|
-| Attractor | ~99% | 3 | GAP-A1, GAP-A2, GAP-A3 |
-| Coding Agent Loop | ~100% | 0 | — |
-| Unified LLM Client | ~97% | 2 | GAP-L1, GAP-L2 |
-
-**Total gaps: 5** (1 extensibility point, 1 optional server mode, 1 minor interface method, 1 third-party adapter, 1 convenience API layer)
-
-**Highest priority gaps:**
-1. GAP-L1 (OpenAI-Compatible Adapter) — blocks third-party LLM endpoint support
-2. GAP-A1 (Custom Transform Registration) — blocks user-defined graph transforms
-3. GAP-L2 (generate() tool loop) — standalone LLM client users lack built-in tool loop
-4. GAP-A3 (Interviewer ask_multiple/inform) — minor interface completeness
-5. GAP-A2 (HTTP Server Mode) — optional per spec
+1. Attractor: enriched canonical interviewer answer model (`answer_value`, `selected_option`, `text`) with legacy label compatibility and boundary normalization.
+2. Attractor: cocoon `logs` field added and backfilled on legacy checkpoint load.
+3. Attractor: event payload enrichment (`node_started.index`, `run_completed.artifact_count`).
+4. Coding agent loop: `agent_session_started` emitted by `AgentSession` itself (exactly once per session).
+5. Coding agent loop: `ProviderProfile.providerOptions()` added and merged into request provider options.
+6. Coding agent loop: `ToolRegistry.unregister()` implemented.
+7. Coding agent loop: real `glob()`/`grep()` on `LocalExecutionEnvironment` via shared search helpers.
+8. Coding agent loop: `submit()` now auto-discovers project instructions with session-level caching.
+9. Coding agent loop: git context includes recent commit messages.
+10. Unified LLM: `stream_end.response` is required and premature termination emits `error`.
+11. Unified LLM: `Message.name` support added and sanitized for provider constraints.
+12. Unified LLM: `GenerateRequest.max_tool_rounds` added and honored (default 1, deprecated alias retained).
+13. Unified LLM: prompt+messages conflict now throws `InvalidRequestError`.
+14. Unified LLM: Anthropic `provider_options.anthropic.auto_cache = false` supported (legacy alias retained).
+15. Unified LLM: model catalog exposes flat spec fields with one-sprint compatibility aliases.

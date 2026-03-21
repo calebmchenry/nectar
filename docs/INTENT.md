@@ -85,7 +85,7 @@ $ nectar status
 🍯 Honey jar: 12 completed | 🌱 Seedbed: 8 ideas | 🔥 Queen's Orders: 2
 ```
 
-Dark theme by default. Nerd Font / Unicode-aware. Graceful fallback for dumb terminals.
+Nerd Font / Unicode-aware. Graceful fallback for dumb terminals.
 
 ### 2C. A Web UI ("The Hive")
 
@@ -266,7 +266,12 @@ The attractor spec already requires checkpointing and crash recovery — this pr
 Every pipeline execution emits a structured event stream. Checkpoints are human-readable JSON. Logs are comprehensive. When something goes wrong, the user should be able to understand what happened and why without attaching a debugger.
 
 ### Modern and Opinionated
-- Dark theme, no light theme needed (but if easy, sure)
+- **Clean, light base with watercolor-floral accents.** The visual identity draws from watercolor paintings of flowers — soft, organic, with subtle gradient backgrounds, gentle shadows, and slightly irregular border treatments that evoke paint bleed. The effect should be a hint of texture, not a full art project.
+- **Restrained color palette.** Limit accent colors to 3–4 drawn from a floral watercolor range: a soft lavender, a warm coral/peach, a muted sage green, and a golden honey. These provide pops of color without overwhelming the eye.
+- **Colors map to semantic meaning.** The seed lifecycle stages each get a distinct accent color (e.g., seedling → sage green, sprouting → lavender, blooming → coral, honey → golden, wilted → desaturated warm gray). Kanban columns, status badges, and pipeline node states should use these consistently so color carries information, not just decoration.
+- **Typography is a first-class concern.** On a light background, font weight, spacing, and hierarchy are highly visible. Choose typefaces and scale deliberately — the clean base demands it.
+- **Optional dark mode.** Provide a toggle for a muted, desaturated version of the same palette for late-night use. Accent colors should be defined as design tokens so both modes share one source of truth.
+- **The CLI stays terminal-native.** The watercolor aesthetic applies to the web UI only. CLI output remains dark-terminal-friendly with rich colors, emoji, and Unicode as already specified.
 - Real-time updates everywhere (SSE/WebSocket)
 - Fast — sub-second CLI responses, instant UI interactions
 - Keyboard-navigable web UI
@@ -389,11 +394,12 @@ $ nectar upgrade
 
 ### Web UI Requirements
 - Modern SPA (React, Svelte, or similar — choose whatever produces the best result)
-- Dark theme, modern aesthetic
+- Clean, light aesthetic with watercolor-floral accent colors as described in Architecture Principles § Modern and Opinionated
+- Optional dark mode toggle (muted/desaturated variant of the same palette)
 - Real-time updates via SSE or WebSocket
 - Graphviz rendering (client-side or server-side SVG generation)
 - Code editor component for DOT files (syntax highlighting, basic autocomplete)
-- Kanban board with drag-and-drop
+- Kanban board with drag-and-drop (column colors should map to seed lifecycle accent colors)
 - File upload for attachments (images, videos, documents)
 - Keyboard shortcuts for power users
 - Mobile-responsive (but desktop-first)

@@ -120,7 +120,7 @@ digraph ComplianceLoop {
     commit [
         shape=parallelogram,
         label="Commit Sprint",
-        script="SPRINT=$(ls docs/sprints/SPRINT-*.md | sort -V | tail -1 | sed 's/.*SPRINT-//;s/.md//') && git add -A && git commit -m \"feat: implement Sprint ${SPRINT} — $(head -1 docs/sprints/SPRINT-${SPRINT}.md | sed 's/^#* *//')\""
+        script="SPRINT=$(ls docs/sprints/SPRINT-*.md | sort -V | tail -1 | sed 's/.*SPRINT-//;s/.md//') && TITLE=$(head -1 docs/sprints/SPRINT-${SPRINT}.md | sed 's/^#* *//') && git add -A && git commit -m \"feat: implement Sprint ${SPRINT} — ${TITLE}\""
     ]
 
     // ── Edges ──────────────────────────────────────────────────────────

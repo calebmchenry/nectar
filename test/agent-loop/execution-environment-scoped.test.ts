@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { LocalExecutionEnvironment } from '../../src/agent-loop/execution-environment.js';
+import { LocalExecutionEnvironment, _filterEnvForTest } from '../../src/agent-loop/execution-environment.js';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,6 +69,8 @@ describe('ExecutionEnvironment cwd and scoped()', () => {
 
     const result = await scoped.exec('pwd');
     expect(result.stdout.trim()).toContain('packages');
+    expect(result.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(result.timed_out).toBe(false);
   });
 
   it('absolute paths inside workspace still work from scoped env', async () => {
@@ -82,5 +84,55 @@ describe('ExecutionEnvironment cwd and scoped()', () => {
     const resolved = env.workspaceRoot;
     const content = await scoped.readFile(path.join(resolved, 'root.txt'));
     expect(content).toBe('root content');
+  });
+
+  it('initialize and cleanup are idempotent', async () => {
+    const workspace = await createWorkspace();
+    const env = new LocalExecutionEnvironment(workspace);
+
+    await env.initialize();
+    await env.initialize();
+    await env.cleanup();
+    await env.cleanup();
+  });
+
+  it('list_directory delegates tree rendering from the environment', async () => {
+    const workspace = await createWorkspace();
+    await mkdir(path.join(workspace, 'a', 'b'), { recursive: true });
+    await writeFile(path.join(workspace, 'a', 'b', 'file.txt'), 'hello', 'utf8');
+
+    const env = new LocalExecutionEnvironment(workspace);
+    const listing = await env.list_directory('a', 2);
+    expect(listing).toContain('a/');
+    expect(listing).toContain('b/');
+    expect(listing).toContain('file.txt');
+  });
+
+  it('exec sets timed_out when command exceeds timeout', async () => {
+    const workspace = await createWorkspace();
+    const env = new LocalExecutionEnvironment(workspace);
+
+    const result = await env.exec('sleep 1', { timeout_ms: 10 });
+    expect(result.timed_out).toBe(true);
+    expect(result.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('allowlist retains language toolchain roots while stripping secrets', () => {
+    const filtered = _filterEnvForTest({
+      PATH: '/usr/bin',
+      GOPATH: '/tmp/go',
+      CARGO_HOME: '/tmp/cargo',
+      VOLTA_HOME: '/tmp/volta',
+      PNPM_HOME: '/tmp/pnpm',
+      OPENAI_API_KEY: 'secret',
+      MY_SECRET: 'should-not-pass',
+    });
+
+    expect(filtered['GOPATH']).toBe('/tmp/go');
+    expect(filtered['CARGO_HOME']).toBe('/tmp/cargo');
+    expect(filtered['VOLTA_HOME']).toBe('/tmp/volta');
+    expect(filtered['PNPM_HOME']).toBe('/tmp/pnpm');
+    expect(filtered['OPENAI_API_KEY']).toBeUndefined();
+    expect(filtered['MY_SECRET']).toBeUndefined();
   });
 });

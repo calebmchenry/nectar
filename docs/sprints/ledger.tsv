@@ -4,3 +4,16 @@ sprint_id	title	status	updated_at
 016	Unified LLM Client — Middleware, Model Catalog & Telemetry	planned	2026-03-20T00:00:00Z
 017	Manager Loop, Fresh-Run Restart, and Tool Hooks	planned	2026-03-20T00:00:00Z
 018	GitHub Release — Binaries, CI/CD, Install, Upgrade, README, LICENSE	completed	2026-03-20T05:10:00Z
+019	The Hive Runtime — HTTP Server, SSE, and Browser-Ready Human Gates	planned	2026-03-20T00:00:00Z
+020	The Hive Garden Workbench — Browser Authoring, Live Execution, and Fan-In LLM	planned	2026-03-20T00:00:00Z
+021	Seedbed & Swarm Intelligence — Browser Backlog, Multi-AI Analysis, and Stream Stability	planned	2026-03-21T00:00:00Z
+022	Modular Gardens, Local LLMs & Pipeline Extensibility	planned	2026-03-21T00:00:00Z
+023	Condition Expression Language, HTTP Lifecycle Hardening & Agent Loop Polish	planned	2026-03-21T00:00:00Z
+024	Green Suite, Error Taxonomy, Streaming Reasoning Lifecycle & Structured Timeouts	planned	2026-03-21T00:00:00Z
+025	Zero Gaps & Seed-to-Execution Bridge — Green Suite, Spec Compliance, and Linked Work	planned	2026-03-21T00:00:00Z
+026	Kill the Red Suite, Fix the Engine Contract	planned	2026-03-21T00:00:00Z
+027	Green Suite, Agent Observability, and Tool Contract Compliance	planned	2026-03-21T00:00:00Z
+028	Unified LLM Response Contract, Execution Environment Completion & Green Suite	planned	2026-03-21T00:00:00Z
+029	Green Suite, SSE Lifecycle Hardening & Final Compliance Closure	planned	2026-03-21T00:00:00Z
+030	Compliance Zero — Close Every Spec Gap, Ship a Correct Engine	planned	2026-03-21T00:00:00Z
+031	SSE Lifecycle Fix & Full Compliance Closure	planned	2026-03-21T00:00:00Z

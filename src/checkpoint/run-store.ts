@@ -3,10 +3,13 @@ import path from 'node:path';
 import { Cocoon, CocoonSummary, PendingTransition } from './types.js';
 import { ArtifactStore } from '../artifacts/store.js';
 
+export type RunLaunchOrigin = 'seedbed' | 'seed_cli' | 'pipeline_api' | 'garden_hive';
+
 export interface ManifestData {
   run_id: string;
   dot_file: string;
   graph_hash: string;
+  graph_hash_kind?: 'source' | 'prepared';
   graph_label?: string;
   goal?: string;
   started_at: string;
@@ -16,6 +19,10 @@ export interface ManifestData {
   restart_depth?: number;
   parent_run_id?: string;
   parent_node_id?: string;
+  seed_id?: number;
+  seed_dir?: string;
+  seed_garden?: string;
+  launch_origin?: RunLaunchOrigin;
 }
 
 export class RunStore {
@@ -59,9 +66,10 @@ export class RunStore {
     // Canonical first
     const canonicalPath = path.join(this.runDir, 'checkpoint.json');
     const canonical = await readJsonSafe<Cocoon>(canonicalPath);
-    if (canonical) return canonical;
+    if (canonical) return normalizeCocoon(canonical);
     // Legacy fallback
-    return readJsonSafe<Cocoon>(this.legacyPath);
+    const legacy = await readJsonSafe<Cocoon>(this.legacyPath);
+    return legacy ? normalizeCocoon(legacy) : null;
   }
 
   async readManifest(): Promise<ManifestData | null> {
@@ -196,4 +204,14 @@ async function readJsonSafe<T>(filePath: string): Promise<T | null> {
     if (err.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+function normalizeCocoon(cocoon: Cocoon): Cocoon {
+  const logs = Array.isArray((cocoon as Cocoon & { logs?: unknown }).logs)
+    ? (cocoon as Cocoon & { logs?: unknown[] }).logs!.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  return {
+    ...cocoon,
+    logs,
+  };
 }

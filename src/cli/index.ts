@@ -9,7 +9,9 @@ import { registerStatusCommand } from './commands/status.js';
 import { registerValidateCommand } from './commands/validate.js';
 import { registerSeedCommand } from './commands/seed.js';
 import { registerSeedsCommand } from './commands/seeds.js';
+import { registerSwarmCommand } from './commands/swarm.js';
 import { registerUpgradeCommand } from './commands/upgrade.js';
+import { registerServeCommand } from './commands/serve.js';
 
 export function createProgram(): Command {
   const program = new Command();
@@ -25,7 +27,9 @@ export function createProgram(): Command {
   registerStatusCommand(program);
   registerSeedCommand(program);
   registerSeedsCommand(program);
+  registerSwarmCommand(program);
   registerUpgradeCommand(program);
+  registerServeCommand(program);
   return program;
 }
 

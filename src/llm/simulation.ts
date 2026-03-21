@@ -1,5 +1,6 @@
 import type { ProviderAdapter } from './adapters/types.js';
-import type { ContentPart, GenerateRequest, GenerateResponse, LLMClient, LLMRequest, LLMResponse } from './types.js';
+import { GenerateResponse } from './types.js';
+import type { ContentPart, GenerateRequest, LLMClient, LLMRequest, LLMResponse } from './types.js';
 import type { StreamEvent } from './streaming.js';
 
 const PROVIDER = 'simulation';
@@ -97,19 +98,28 @@ export class SimulationProvider implements ProviderAdapter, LLMClient {
 
     const usage = {
       input_tokens: inputTokens,
-      output_tokens: content.length
+      output_tokens: content.length,
+      total_tokens: inputTokens + content.length,
     };
 
-    return {
+    const response = new GenerateResponse({
+      id: `sim-${Date.now().toString(36)}`,
+      message: { role: 'assistant', content: contentParts ?? content },
+      usage,
+      finish_reason: { reason: 'stop', raw: 'end_turn' },
+      model: `${model}-simulated`,
+      provider: PROVIDER,
+      raw: { simulated: true },
+      warnings: [],
+    });
+
+    return Object.assign({
       // Legacy LLMResponse fields
       content,
-      model: `${model}-simulated`,
+      model: response.model,
       usage,
       stop_reason: 'end_turn' as const,
-      // New GenerateResponse fields
-      message: { role: 'assistant' as const, content: contentParts ?? content },
-      provider: PROVIDER
-    };
+    }, response);
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<StreamEvent> {
@@ -122,18 +132,21 @@ export class SimulationProvider implements ProviderAdapter, LLMClient {
           .join('');
 
     yield { type: 'stream_start', model: result.model };
+    yield { type: 'text_start' };
 
     // Yield text in chunks to simulate streaming
     const chunkSize = 20;
     for (let i = 0; i < text.length; i += chunkSize) {
       yield { type: 'content_delta', text: text.slice(i, i + chunkSize) };
     }
+    yield { type: 'text_end' };
 
     yield { type: 'usage', usage: result.usage };
     yield {
       type: 'stream_end',
       stop_reason: 'end_turn',
-      message: result.message
+      message: result.message,
+      response: result,
     };
   }
 }

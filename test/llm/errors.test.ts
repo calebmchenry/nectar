@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   LLMError,
   AuthenticationError,
+  QuotaExceededError,
   RateLimitError,
   OverloadedError,
   InvalidRequestError,
@@ -9,6 +10,7 @@ import {
   ContentFilterError,
   ConfigurationError,
   NetworkError,
+  StreamError,
   TimeoutError,
   parseRetryAfterMs
 } from '../../src/llm/errors.js';
@@ -28,6 +30,12 @@ describe('LLMError hierarchy', () => {
     expect(err.retryable).toBe(true);
     expect(err.status_code).toBe(429);
     expect(err.retry_after_ms).toBe(5000);
+  });
+
+  it('QuotaExceededError is not retryable', () => {
+    const err = new QuotaExceededError('openai');
+    expect(err.retryable).toBe(false);
+    expect(err.status_code).toBe(429);
   });
 
   it('OverloadedError is retryable', () => {
@@ -63,6 +71,16 @@ describe('LLMError hierarchy', () => {
     expect(err.retryable).toBe(true);
   });
 
+  it('StreamError is not retryable and carries optional metadata', () => {
+    const err = new StreamError('anthropic', {
+      partial_content: 'hello',
+      phase: 'idle_timeout',
+    });
+    expect(err.retryable).toBe(false);
+    expect(err.partial_content).toBe('hello');
+    expect(err.phase).toBe('idle_timeout');
+  });
+
   it('ConfigurationError is not retryable and is instance of LLMError', () => {
     const err = new ConfigurationError();
     expect(err.retryable).toBe(false);
@@ -84,6 +102,18 @@ describe('LLMError hierarchy', () => {
     const invalid = new InvalidRequestError('test');
     expect(config).not.toBeInstanceOf(InvalidRequestError);
     expect(invalid).not.toBeInstanceOf(ConfigurationError);
+  });
+
+  it('LLMError carries error_code and raw metadata when provided', () => {
+    const err = new LLMError('provider error', {
+      provider: 'openai',
+      retryable: false,
+      status_code: 400,
+      error_code: 'context_length_exceeded',
+      raw: { error: { code: 'context_length_exceeded' } },
+    });
+    expect(err.error_code).toBe('context_length_exceeded');
+    expect(err.raw).toEqual({ error: { code: 'context_length_exceeded' } });
   });
 });
 

@@ -1,4 +1,5 @@
 import { Diagnostic, GardenGraph } from '../garden/types.js';
+import type { Transform, TransformContext } from './types.js';
 
 export interface TransformResult {
   graph: GardenGraph;
@@ -33,4 +34,12 @@ export function expandGoalVariables(graph: GardenGraph): TransformResult {
   }
 
   return { graph, diagnostics };
+}
+
+export class GoalExpansionTransform implements Transform {
+  readonly name = 'goal-expansion';
+
+  apply(graph: GardenGraph, _context: TransformContext): TransformResult {
+    return expandGoalVariables(graph);
+  }
 }

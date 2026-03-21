@@ -11,7 +11,8 @@ export function serializeParallelResults(results: ParallelResults): string {
     branches: results.branches.map((b) => ({
       branchId: b.branchId,
       status: b.status,
-      durationMs: b.durationMs
+      durationMs: b.durationMs,
+      contextSnapshot: pruneContextSnapshot(b.contextSnapshot),
     })),
     joinPolicy: results.joinPolicy,
     convergenceNode: results.convergenceNode
@@ -21,7 +22,12 @@ export function serializeParallelResults(results: ParallelResults): string {
 
 export function deserializeParallelResults(serialized: string): ParallelResults {
   const parsed = JSON.parse(serialized) as {
-    branches: Array<{ branchId: string; status: NodeStatus; durationMs: number }>;
+    branches: Array<{
+      branchId: string;
+      status: NodeStatus;
+      durationMs: number;
+      contextSnapshot?: Record<string, string>;
+    }>;
     joinPolicy: string;
     convergenceNode?: string;
   };
@@ -30,10 +36,24 @@ export function deserializeParallelResults(serialized: string): ParallelResults 
     branches: parsed.branches.map((b) => ({
       branchId: b.branchId,
       status: b.status,
-      contextSnapshot: {},
+      contextSnapshot: b.contextSnapshot ?? {},
       durationMs: b.durationMs
     })),
     joinPolicy: parsed.joinPolicy,
     convergenceNode: parsed.convergenceNode
   };
+}
+
+function pruneContextSnapshot(snapshot: Record<string, string>): Record<string, string> {
+  const pruned: Record<string, string> = {};
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (key.endsWith('.response')) {
+      pruned[key] = value.slice(0, 600);
+      continue;
+    }
+    if (key === 'outcome' || key === 'preferred_label' || key === 'last_response' || key === 'last_stage') {
+      pruned[key] = value.slice(0, 300);
+    }
+  }
+  return pruned;
 }

@@ -203,6 +203,18 @@ describe('SubagentManager', () => {
     );
   });
 
+  it('spawn passes model override to createChildSession and handle', () => {
+    const deps = makeDeps();
+    const manager = new SubagentManager(deps);
+
+    const handle = manager.spawn('task', { model: 'gemini-2.5-flash' }) as any;
+
+    expect(deps.createChildSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gemini-2.5-flash' })
+    );
+    expect(handle.model).toBe('gemini-2.5-flash');
+  });
+
   it('emits subagent_spawned event', () => {
     const events: any[] = [];
     const deps = makeDeps({
@@ -236,5 +248,33 @@ describe('SubagentManager', () => {
     const completeEvent = events.find(e => e.type === 'subagent_completed');
     expect(completeEvent).toBeDefined();
     expect(completeEvent.status).toBe('success');
+  });
+
+  it('preserves long child output up to spawn_agent limit', async () => {
+    const longOutput = 'x'.repeat(15_000);
+    const session = mockSession({
+      submit: vi.fn().mockResolvedValue({
+        status: 'success',
+        final_text: longOutput,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        turn_count: 1,
+        tool_call_count: 0,
+        stop_reason: 'end_turn',
+      }),
+    });
+    const deps = makeDeps({
+      createChildSession: vi.fn().mockReturnValue({
+        session,
+        sessionId: 'child-session-id',
+      }),
+    });
+    const manager = new SubagentManager(deps);
+
+    const handle = manager.spawn('task') as any;
+    const result = await handle.result_promise;
+
+    expect(result.status).toBe('COMPLETED');
+    expect(result.output.length).toBe(15_000);
+    expect(result.output).toBe(longOutput);
   });
 });

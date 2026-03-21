@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createProgram } from '../../src/cli/index.js';
 import { NECTAR_VERSION } from '../../src/generated/version.js';
 import { resolvePlatformAsset } from '../../src/upgrade/platform.js';
+import { canListenOnLoopback } from '../helpers/network.js';
 
 const tempDirs: string[] = [];
 
@@ -286,6 +287,9 @@ describe('integration upgrade command', () => {
   });
 
   it('--check reports available version without modifying binary', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
     const platform = resolvePlatformAsset();
     const { binaryPath } = await setupFakeBinary();
     const before = await readFile(binaryPath, 'utf8');
@@ -315,6 +319,9 @@ describe('integration upgrade command', () => {
   });
 
   it('--check reports already up to date when versions match', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
     const platform = resolvePlatformAsset();
     const { binaryPath } = await setupFakeBinary();
 
@@ -339,6 +346,9 @@ describe('integration upgrade command', () => {
   });
 
   it('--yes replaces binary contents and preserves permissions', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
     const platform = resolvePlatformAsset();
     const { dir, binaryPath } = await setupFakeBinary('#!/bin/sh\necho before\n');
     const beforeMode = (await stat(binaryPath)).mode & 0o777;
@@ -372,6 +382,9 @@ describe('integration upgrade command', () => {
   });
 
   it('checksum mismatch aborts before replacement', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
     const platform = resolvePlatformAsset();
     const { dir, binaryPath } = await setupFakeBinary('#!/bin/sh\necho original\n');
     const before = await readFile(binaryPath, 'utf8');
@@ -419,6 +432,9 @@ describe('integration upgrade command', () => {
   });
 
   it('handles no-release 404 with clear message', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
     const platform = resolvePlatformAsset();
     const { binaryPath } = await setupFakeBinary();
 
@@ -444,6 +460,9 @@ describe('integration upgrade command', () => {
   });
 
   it('reports missing platform asset in release metadata', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
     const platform = resolvePlatformAsset();
     const { binaryPath } = await setupFakeBinary();
 

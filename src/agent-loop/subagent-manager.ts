@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { AgentSession } from './session.js';
 import type { AgentEventListener, SubagentSpawnedEvent, SubagentCompletedEvent, SubagentMessageEvent } from './events.js';
 import type { SubagentConfig, SubAgentHandle, SubAgentResult, SubagentHandleStatus } from './types.js';
-import { DEFAULT_SUBAGENT_CONFIG } from './types.js';
+import { DEFAULT_SUBAGENT_CONFIG, TOOL_OUTPUT_LIMITS } from './types.js';
+import { truncateToolOutput } from './truncation.js';
 
 export interface SpawnOptions {
+  model?: string;
   working_dir?: string;
   max_tool_rounds?: number;
   max_turns?: number;
@@ -20,6 +22,7 @@ export interface SubagentManagerDeps {
     agentId: string;
     task: string;
     depth: number;
+    model?: string;
     workingDir?: string;
     maxToolRounds: number;
     maxTurns: number;
@@ -75,6 +78,7 @@ export class SubagentManager {
       agentId,
       task,
       depth: this.deps.depth + 1,
+      model: opts?.model,
       workingDir: opts?.working_dir,
       maxToolRounds,
       maxTurns,
@@ -87,6 +91,7 @@ export class SubagentManager {
       id: agentId,
       task,
       status: 'RUNNING',
+      model: opts?.model,
       working_dir: opts?.working_dir ?? '',
       started_at: new Date().toISOString(),
       result_promise: resultPromise,
@@ -159,11 +164,16 @@ export class SubagentManager {
       const status: SubagentHandleStatus = result.status === 'success' ? 'COMPLETED'
         : result.status === 'aborted' ? 'CLOSED'
         : 'FAILED';
+      const { preview } = truncateToolOutput(
+        'spawn_agent',
+        result.final_text,
+        TOOL_OUTPUT_LIMITS.spawn_agent ?? 20_000,
+      );
 
       return {
         agent_id: agentId,
         status,
-        output: result.final_text.slice(0, 2000),
+        output: preview,
         error: result.error_message,
         usage: result.usage,
         turns_used: result.turn_count,

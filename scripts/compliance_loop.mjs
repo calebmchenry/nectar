@@ -92,7 +92,7 @@ async function handleImplement(state, statePath) {
   if (state.implement_attempts === 1) {
     console.error(`[${runId}] implement: simulated first-attempt failure.`);
     await saveState(statePath, state);
-    process.exit(1);
+    process.exit(2);
   }
 
   console.log(`[${runId}] implement: succeeded on attempt ${state.implement_attempts}.`);

@@ -18,14 +18,131 @@ describe('garden validate', () => {
     expect(errors).toContain('TOOL_SCRIPT_REQUIRED');
   });
 
+  it('accepts tool_command without script', () => {
+    const errors = codes(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, tool_command="echo hi"]\nend [shape=Msquare]\nstart -> mid\nmid -> end }`);
+    expect(errors).not.toContain('TOOL_SCRIPT_REQUIRED');
+  });
+
+  it('warns when only legacy script is provided', () => {
+    const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, script="echo hi"]\nend [shape=Msquare]\nstart -> mid\nmid -> end }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'TOOL_SCRIPT_DEPRECATED')).toBe(true);
+  });
+
+  it('emits INFO severity for deprecated tool script usage', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, script="echo hi"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diag = validateGarden(graph).find((item) => item.code === 'TOOL_SCRIPT_DEPRECATED');
+    expect(diag).toBeTruthy();
+    expect(diag?.severity).toBe('info');
+    expect(diag?.node_id).toBe('mid');
+    expect(diag?.fix).toContain('tool_command');
+  });
+
+  it('does not treat INFO diagnostics as validation errors', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, script="echo hi"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'TOOL_SCRIPT_DEPRECATED' && diag.severity === 'info')).toBe(true);
+    expect(diags.some((diag) => diag.severity === 'error')).toBe(false);
+  });
+
+  it('populates node_id for multiple node-specific validation rules', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      bad_shape [shape=octagon]
+      bad_retries [shape=parallelogram, script="echo hi", max_retries="abc"]
+      bad_policy [shape=parallelogram, script="echo hi", retry_policy="turbo", retry_target="missing_node"]
+      missing_prompt [shape=box]
+      end [shape=Msquare]
+      start -> bad_shape
+      bad_shape -> bad_retries
+      bad_retries -> bad_policy
+      bad_policy -> missing_prompt
+      missing_prompt -> end
+    }`);
+
+    const diags = validateGarden(graph);
+    const nodeIdCodes = new Set(
+      diags.filter((diag) => Boolean(diag.node_id)).map((diag) => diag.code),
+    );
+
+    expect(nodeIdCodes.has('UNSUPPORTED_SHAPE')).toBe(true);
+    expect(nodeIdCodes.has('INVALID_MAX_RETRIES')).toBe(true);
+    expect(nodeIdCodes.has('UNKNOWN_RETRY_POLICY')).toBe(true);
+    expect(nodeIdCodes.has('RETRY_TARGET_MISSING')).toBe(true);
+    expect(nodeIdCodes.has('PROMPT_MISSING')).toBe(true);
+  });
+
+  it('populates edge metadata for edge diagnostics', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      end [shape=Msquare]
+      start -> end [condition="outcome=success &&"]
+    }`);
+    const diag = validateGarden(graph).find((item) => item.code === 'INVALID_CONDITION');
+    expect(diag).toBeTruthy();
+    expect(diag?.edge).toEqual({
+      source: 'start',
+      target: 'end',
+      label: undefined,
+      condition: 'outcome=success &&',
+    });
+  });
+
+  it('includes fix suggestions for common validation failures', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      invalid_shape [shape=octagon]
+      missing_tool [shape=parallelogram]
+      bad_retry [shape=parallelogram, script="echo hi", max_retries="abc"]
+      end [shape=Msquare]
+      start -> invalid_shape
+      invalid_shape -> missing_tool
+      missing_tool -> bad_retry
+      bad_retry -> end
+    }`);
+    const diagnostics = validateGarden(graph);
+    const withFix = diagnostics.filter((diag) => typeof diag.fix === 'string' && diag.fix.length > 0);
+    expect(withFix.length).toBeGreaterThanOrEqual(3);
+  });
+
   it('requires valid max_retries', () => {
     const errors = codes(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, script="echo hi", max_retries=nope]\nend [shape=Msquare]\nstart -> mid\nmid -> end }`);
     expect(errors).toContain('INVALID_MAX_RETRIES');
   });
 
+  it('warns on unknown retry_policy values', () => {
+    const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, script="echo hi", retry_policy="turbo"]\nend [shape=Msquare]\nstart -> mid\nmid -> end }`);
+    const diags = validateGarden(graph);
+    const retryDiag = diags.find((diag) => diag.code === 'UNKNOWN_RETRY_POLICY');
+    expect(retryDiag).toBeTruthy();
+    expect(retryDiag?.severity).toBe('warning');
+  });
+
   it('validates edge condition syntax', () => {
-    const errors = codes(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, script="echo hi"]\nend [shape=Msquare]\nstart -> mid\nmid -> end [condition="(outcome=success)"] }`);
+    const errors = codes(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, script="echo hi"]\nend [shape=Msquare]\nstart -> mid\nmid -> end [condition="outcome=success &&"] }`);
     expect(errors).toContain('INVALID_CONDITION');
+  });
+
+  it('warns on unknown steps.<nodeId> references in edge conditions', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, script="echo hi"]
+      end [shape=Msquare]
+      start -> mid
+      mid -> end [condition="steps.review.status = success"]
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((d) => d.code === 'UNKNOWN_STEP_REFERENCE')).toBe(true);
   });
 
   it('finds unreachable nodes', () => {
@@ -227,11 +344,23 @@ describe('garden validate', () => {
     const errors = codes(`digraph G {
       "stack.child_dotfile"="child.dot"
       start [shape=Mdiamond]
-      sup [shape=house, "manager.stop_condition"="(broken)"]
+      sup [shape=house, "manager.stop_condition"="EXISTS"]
       done [shape=Msquare]
       start -> sup -> done
     }`);
     expect(errors).toContain('INVALID_MANAGER_STOP_CONDITION');
+  });
+
+  it('warns on unknown steps.<nodeId> in manager.stop_condition', () => {
+    const graph = parseGardenSource(`digraph G {
+      "stack.child_dotfile"="child.dot"
+      start [shape=Mdiamond]
+      sup [shape=house, "manager.stop_condition"="EXISTS steps.review.output"]
+      done [shape=Msquare]
+      start -> sup -> done
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((d) => d.code === 'UNKNOWN_STEP_REFERENCE')).toBe(true);
   });
 
   it('warns when steer action has no prompt', () => {

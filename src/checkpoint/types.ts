@@ -1,4 +1,5 @@
 import { CompletedNodeState, RunStatus } from '../engine/types.js';
+import type { StepResultState } from '../engine/step-state.js';
 
 export interface PendingTransition {
   source_node_id: string;
@@ -17,6 +18,7 @@ export interface Cocoon {
   run_id: string;
   dot_file: string;
   graph_hash: string;
+  graph_hash_kind?: 'source' | 'prepared';
   started_at: string;
   updated_at: string;
   status: RunStatus;
@@ -25,10 +27,13 @@ export interface Cocoon {
   current_node: string | undefined;
   context: Record<string, string>;
   retry_state: Record<string, number>;
+  logs: string[];
   pending_transition?: PendingTransition;
   resume_requires_degraded_fidelity?: boolean;
   thread_registry_keys?: string[];
   restarted_to?: string;
+  step_results?: Record<string, StepResultState>;
+  artifact_aliases?: Record<string, string>;
 }
 
 export interface CocoonSummary {

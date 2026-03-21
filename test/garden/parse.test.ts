@@ -46,6 +46,25 @@ describe('garden parse', () => {
     expect(impl?.llmProvider).toBe('openai');
   });
 
+  it('parses node retry_policy attribute', () => {
+    const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nimpl [shape=box, prompt="Do", retry_policy="patient"]\nend [shape=Msquare]\nstart -> impl -> end }`);
+    const impl = graph.nodeMap.get('impl');
+    expect(impl?.retryPolicy).toBe('patient');
+  });
+
+  it('parses graph default_retry_policy attribute', () => {
+    const graph = parseGardenSource(`digraph G { graph [default_retry_policy="standard"]\nstart [shape=Mdiamond]\nend [shape=Msquare]\nstart -> end }`);
+    expect(graph.defaultRetryPolicy).toBe('standard');
+  });
+
+  it('preserves script fallback without rewriting explicit tool_command attribute', () => {
+    const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nimpl [shape=parallelogram, script="echo legacy"]\nend [shape=Msquare]\nstart -> impl -> end }`);
+    const impl = graph.nodeMap.get('impl');
+    expect(impl?.toolCommand).toBe('echo legacy');
+    expect(impl?.attributes.tool_command).toBeUndefined();
+    expect(impl?.attributes.script).toBe('echo legacy');
+  });
+
   it('parses reasoning_effort attribute', () => {
     const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nimpl [shape=box, prompt="Do", reasoning_effort="high"]\nend [shape=Msquare]\nstart -> impl -> end }`);
     const impl = graph.nodeMap.get('impl');

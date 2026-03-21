@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { HandlerExecutionInput, NodeOutcome } from '../engine/types.js';
 import { normalizeLabel } from '../engine/edge-selector.js';
 import { Answer, Choice, Interviewer, Question, QuestionType, parseAccelerator } from '../interviewer/types.js';
@@ -77,8 +78,11 @@ export class WaitHumanHandler implements NodeHandler {
 
     // Determine question type
     const questionType = detectQuestionType(choices);
+    const questionId = randomUUID();
+    const stage = input.context['last_stage'] || input.node.id;
 
     const question: Question = {
+      id: questionId,
       type: questionType,
       text: input.node.label ?? input.node.id,
       choices,
@@ -88,26 +92,78 @@ export class WaitHumanHandler implements NodeHandler {
       run_id: input.run_id
     };
 
+    const askedAt = Date.now();
+    input.emitEvent?.({
+      type: 'interview_started',
+      run_id: input.run_id,
+      node_id: input.node.id,
+      question_id: question.id,
+      question_text: question.text,
+      stage,
+    });
+
     let answer: Answer;
     try {
       answer = await this.interviewer.ask(question);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (/timed out/i.test(message)) {
+        input.emitEvent?.({
+          type: 'interview_timeout',
+          run_id: input.run_id,
+          node_id: input.node.id,
+          question_id: question.id,
+          stage,
+          duration_ms: Date.now() - askedAt,
+        });
+      }
       return {
         status: 'failure',
         error_message: message
       };
     }
 
+    const selectedOption = Number.isInteger(answer.selected_option) ? answer.selected_option : undefined;
+    const selectedByOption = selectedOption !== undefined && selectedOption >= 0 && selectedOption < choices.length
+      ? choices[selectedOption]
+      : undefined;
+    const preferredLabel = selectedByOption?.label ?? answer.selected_label;
+    if (answer.source === 'timeout') {
+      input.emitEvent?.({
+        type: 'interview_timeout',
+        run_id: input.run_id,
+        node_id: input.node.id,
+        question_id: question.id,
+        stage,
+        duration_ms: Date.now() - askedAt,
+      });
+    } else {
+      input.emitEvent?.({
+        type: 'interview_completed',
+        run_id: input.run_id,
+        node_id: input.node.id,
+        question_id: question.id,
+        answer: preferredLabel,
+        duration_ms: Date.now() - askedAt,
+      });
+    }
+
     // Find the target for the selected label
-    const normalizedSelected = normalizeLabel(answer.selected_label);
-    const matchedChoice = choices.find((c) => normalizeLabel(c.label) === normalizedSelected);
+    const normalizedSelected = normalizeLabel(preferredLabel);
+    const matchedChoice = selectedByOption ?? choices.find((c) => normalizeLabel(c.label) === normalizedSelected);
     const target = matchedChoice?.edge_target;
+    const selectedValue = selectedOption !== undefined
+      ? String(selectedOption)
+      : (answer.text ?? preferredLabel);
 
     return {
       status: 'success',
-      preferred_label: answer.selected_label,
-      suggested_next: target ? [target] : undefined
+      preferred_label: preferredLabel,
+      suggested_next: target ? [target] : undefined,
+      context_updates: {
+        'human.gate.selected': selectedValue,
+        'human.gate.label': matchedChoice?.label ?? preferredLabel,
+      },
     };
   }
 }

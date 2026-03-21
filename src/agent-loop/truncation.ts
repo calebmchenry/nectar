@@ -8,6 +8,8 @@ export const TOOL_LINE_CAPS: Record<string, number> = {
   shell: 256,
   grep: 200,
   glob: 500,
+  read_many_files: 1_000,
+  list_dir: 800,
 };
 
 export function truncateForModel(text: string, limit: number): string {
@@ -16,14 +18,14 @@ export function truncateForModel(text: string, limit: number): string {
     return text;
   }
 
-  const headSize = Math.floor(limit * 0.8);
+  const headSize = Math.ceil(limit / 2);
   const tailSize = limit - headSize;
   const omitted = text.length - headSize - tailSize;
 
   const head = text.slice(0, headSize);
   const tail = text.slice(text.length - tailSize);
 
-  let result = `${head}\n\n[... truncated ${omitted} characters ...]\n\n${tail}`;
+  let result = `${head}\n\n[WARNING: Tool output was truncated. ${omitted} characters were removed from the middle. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]\n\n${tail}`;
 
   // Secondary pass: if the result is a single enormous line, apply line-based splitting
   if (!result.includes('\n') && result.length > limit) {
@@ -44,7 +46,8 @@ export function truncateForModel(text: string, limit: number): string {
 export function truncateToolOutput(
   toolName: string,
   raw: string,
-  charLimit: number
+  charLimit: number,
+  lineCaps: Record<string, number> = TOOL_LINE_CAPS,
 ): { preview: string; truncated: boolean } {
   let preview = raw;
   let truncated = false;
@@ -56,13 +59,16 @@ export function truncateToolOutput(
   }
 
   // Second pass: line cap for tools that produce many lines
-  const lineCap = TOOL_LINE_CAPS[toolName];
+  const lineCap = lineCaps[toolName];
   if (lineCap) {
     const lines = preview.split('\n');
     if (lines.length > lineCap) {
-      const kept = lines.slice(0, lineCap);
-      kept.push(`\n[... truncated ${lines.length - lineCap} lines ...]`);
-      preview = kept.join('\n');
+      const headCount = Math.ceil(lineCap / 2);
+      const tailCount = lineCap - headCount;
+      const omitted = lines.length - headCount - tailCount;
+      const headLines = lines.slice(0, headCount);
+      const tailLines = lines.slice(lines.length - tailCount);
+      preview = `${headLines.join('\n')}\n[... ${omitted} lines omitted ...]\n${tailLines.join('\n')}`;
       truncated = true;
     }
   }

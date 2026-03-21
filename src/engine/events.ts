@@ -12,12 +12,22 @@ export interface NodeStartedEvent {
   type: 'node_started';
   run_id: string;
   node_id: string;
+  index: number;
   attempt: number;
   started_at: string;
 }
 
 export interface NodeCompletedEvent {
   type: 'node_completed';
+  run_id: string;
+  node_id: string;
+  outcome: NodeOutcome;
+  completed_at: string;
+  duration_ms: number;
+}
+
+export interface StageFailedEvent {
+  type: 'stage_failed';
   run_id: string;
   node_id: string;
   outcome: NodeOutcome;
@@ -47,6 +57,7 @@ export interface RunCompletedEvent {
   completed_at: string;
   duration_ms: number;
   completed_nodes: number;
+  artifact_count: number;
 }
 
 export interface RunInterruptedEvent {
@@ -60,6 +71,16 @@ export interface RunErrorEvent {
   run_id: string;
   status: Exclude<RunStatus, 'running' | 'completed'>;
   message: string;
+}
+
+export interface PipelineFailedEvent {
+  type: 'pipeline_failed';
+  run_id: string;
+  status: 'failed';
+  final_status: 'failed';
+  failed_node_id: string;
+  message: string;
+  failed_at: string;
 }
 
 export interface HumanQuestionEvent {
@@ -78,6 +99,40 @@ export interface HumanAnswerEvent {
   node_id: string;
   selected_label: string;
   source: 'user' | 'timeout' | 'auto' | 'queue';
+}
+
+export interface InterviewStartedEvent {
+  type: 'interview_started';
+  run_id: string;
+  node_id: string;
+  question_id: string;
+  question_text: string;
+  stage: string;
+}
+
+export interface InterviewCompletedEvent {
+  type: 'interview_completed';
+  run_id: string;
+  node_id: string;
+  question_id: string;
+  answer: string;
+  duration_ms: number;
+}
+
+export interface InterviewTimeoutEvent {
+  type: 'interview_timeout';
+  run_id: string;
+  node_id: string;
+  question_id: string;
+  stage: string;
+  duration_ms: number;
+}
+
+export interface InterviewInformEvent {
+  type: 'interview_inform';
+  run_id: string;
+  stage: string;
+  message: string;
 }
 
 export interface ParallelStartedEvent {
@@ -129,6 +184,38 @@ export interface AgentSessionStartedRunEvent {
   state?: string;
 }
 
+export interface AgentUserInputRunEvent {
+  type: 'agent_user_input';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  source: 'submit' | 'follow_up';
+  text: string;
+}
+
+export interface AgentSteeringInjectedRunEvent {
+  type: 'agent_steering_injected';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  message: string;
+}
+
+export interface AgentAssistantTextStartRunEvent {
+  type: 'agent_assistant_text_start';
+  run_id: string;
+  node_id: string;
+  turn_number: number;
+}
+
+export interface AgentAssistantTextEndRunEvent {
+  type: 'agent_assistant_text_end';
+  run_id: string;
+  node_id: string;
+  turn_number: number;
+  char_count: number;
+}
+
 export interface AgentToolCalledRunEvent {
   type: 'agent_tool_called';
   run_id: string;
@@ -136,6 +223,17 @@ export interface AgentToolCalledRunEvent {
   call_id: string;
   tool_name: string;
   arguments: Record<string, unknown>;
+}
+
+export interface AgentToolCallOutputDeltaRunEvent {
+  type: 'agent_tool_call_output_delta';
+  run_id: string;
+  node_id: string;
+  call_id: string;
+  tool_name: string;
+  delta: string;
+  chunk_index: number;
+  chunk_count: number;
 }
 
 export interface AgentToolCompletedRunEvent {
@@ -169,6 +267,59 @@ export interface AgentSessionCompletedRunEvent {
   duration_ms: number;
   session_id?: string;
   final_state?: string;
+}
+
+export interface AgentProcessingEndedRunEvent {
+  type: 'agent_processing_ended';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  state: string;
+  pending_inputs: number;
+}
+
+export interface AgentSessionEndedRunEvent {
+  type: 'agent_session_ended';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  reason: 'closed' | 'aborted';
+  final_state: string;
+}
+
+export interface AgentTurnLimitReachedRunEvent {
+  type: 'agent_turn_limit_reached';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  max_turns: number;
+}
+
+export interface AgentWarningRunEvent {
+  type: 'agent_warning';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  code: 'context_window_pressure' | 'tool_output_truncated';
+  message: string;
+}
+
+export interface AgentErrorRunEvent {
+  type: 'agent_error';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  message: string;
+}
+
+export interface ContextWindowWarningRunEvent {
+  type: 'context_window_warning';
+  run_id: string;
+  node_id: string;
+  session_id: string;
+  usage_pct: number;
+  estimated_tokens: number;
+  context_window: number;
 }
 
 // Subagent events (bridged from agent-loop)
@@ -264,13 +415,19 @@ export type RunEvent =
   | RunStartedEvent
   | NodeStartedEvent
   | NodeCompletedEvent
+  | StageFailedEvent
   | NodeRetryingEvent
   | EdgeSelectedEvent
   | RunCompletedEvent
   | RunInterruptedEvent
+  | PipelineFailedEvent
   | RunErrorEvent
   | HumanQuestionEvent
   | HumanAnswerEvent
+  | InterviewStartedEvent
+  | InterviewCompletedEvent
+  | InterviewTimeoutEvent
+  | InterviewInformEvent
   | ParallelStartedEvent
   | ParallelBranchStartedEvent
   | ParallelBranchCompletedEvent
@@ -278,10 +435,21 @@ export type RunEvent =
   | CheckpointSavedEvent
   | AutoStatusAppliedEvent
   | AgentSessionStartedRunEvent
+  | AgentUserInputRunEvent
+  | AgentSteeringInjectedRunEvent
+  | AgentAssistantTextStartRunEvent
+  | AgentAssistantTextEndRunEvent
   | AgentToolCalledRunEvent
+  | AgentToolCallOutputDeltaRunEvent
   | AgentToolCompletedRunEvent
   | AgentLoopDetectedRunEvent
+  | AgentProcessingEndedRunEvent
+  | AgentSessionEndedRunEvent
+  | AgentTurnLimitReachedRunEvent
+  | AgentWarningRunEvent
+  | AgentErrorRunEvent
   | AgentSessionCompletedRunEvent
+  | ContextWindowWarningRunEvent
   | SubagentSpawnedRunEvent
   | SubagentCompletedRunEvent
   | SubagentMessageRunEvent

@@ -1,5 +1,6 @@
 import { buildEnvironmentContext, buildGitSnapshot } from './environment-context.js';
 import { resolveModelSelector } from '../llm/catalog.js';
+import type { ExecutionEnvironment } from './execution-environment.js';
 
 export interface ProfileContext {
   workspace_root: string;
@@ -11,6 +12,7 @@ export interface ProfileContext {
 export interface ProviderProfile {
   name: string;
   systemPrompt(context: ProfileContext): string;
+  providerOptions(): Record<string, unknown>;
   defaultModel?: string;
   parallel_tool_execution: boolean;
   max_parallel_tools: number;
@@ -60,6 +62,14 @@ export class AnthropicProfile implements ProviderProfile {
     return baseSystemPrompt(context,
       'When using edit_file, provide enough context in old_string to ensure a unique match. Include surrounding lines if the target text is not unique.');
   }
+
+  providerOptions(): Record<string, unknown> {
+    return {
+      anthropic: {
+        betas: ['prompt-caching-2024-07-31'],
+      },
+    };
+  }
 }
 
 export class OpenAIProfile implements ProviderProfile {
@@ -73,6 +83,10 @@ export class OpenAIProfile implements ProviderProfile {
     return baseSystemPrompt(context,
       'Use apply_patch to make targeted edits to existing files. Use the v4a patch format wrapped in "*** Begin Patch" / "*** End Patch". Use function calls to interact with the codebase. Each function call should have well-formed JSON arguments.');
   }
+
+  providerOptions(): Record<string, unknown> {
+    return {};
+  }
 }
 
 export class GeminiProfile implements ProviderProfile {
@@ -80,11 +94,31 @@ export class GeminiProfile implements ProviderProfile {
   readonly defaultModel = resolveModelSelector('gemini', 'default');
   readonly parallel_tool_execution = false;
   readonly max_parallel_tools = 8;
-  readonly visibleTools = ['read_file', 'write_file', 'edit_file', 'shell', 'grep', 'glob'];
+  readonly visibleTools = [
+    'read_file',
+    'read_many_files',
+    'list_dir',
+    'write_file',
+    'edit_file',
+    'shell',
+    'grep',
+    'glob',
+  ];
 
   systemPrompt(context: ProfileContext): string {
     return baseSystemPrompt(context,
       'Use function calling to interact with the codebase. Provide all required parameters for each function call.');
+  }
+
+  providerOptions(): Record<string, unknown> {
+    return {
+      gemini: {
+        safety_settings: [
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+        ],
+      },
+    };
   }
 }
 
@@ -108,11 +142,12 @@ export function selectProfile(providerName?: string): ProviderProfile {
 export async function buildFullSystemPrompt(
   profile: ProviderProfile,
   context: ProfileContext,
-  opts?: { provider?: string; model?: string }
+  opts?: { provider?: string; model?: string; env?: ExecutionEnvironment }
 ): Promise<string> {
   const base = profile.systemPrompt(context);
 
-  const envBlock = buildEnvironmentContext({
+  const envBlock = await buildEnvironmentContext({
+    env: opts?.env,
     workspaceRoot: context.workspace_root,
     provider: opts?.provider ?? profile.name,
     model: opts?.model ?? profile.defaultModel,

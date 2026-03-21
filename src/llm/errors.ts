@@ -2,16 +2,27 @@ export class LLMError extends Error {
   readonly provider: string;
   readonly retryable: boolean;
   readonly status_code?: number;
+  error_code?: string;
+  raw?: Record<string, unknown>;
 
   constructor(
     message: string,
-    opts: { provider: string; retryable: boolean; status_code?: number; cause?: unknown }
+    opts: {
+      provider: string;
+      retryable: boolean;
+      status_code?: number;
+      cause?: unknown;
+      error_code?: string;
+      raw?: Record<string, unknown>;
+    }
   ) {
     super(message, { cause: opts.cause });
     this.name = 'LLMError';
     this.provider = opts.provider;
     this.retryable = opts.retryable;
     this.status_code = opts.status_code;
+    this.error_code = opts.error_code;
+    this.raw = opts.raw;
   }
 }
 
@@ -24,6 +35,30 @@ export class AuthenticationError extends LLMError {
       cause
     });
     this.name = 'AuthenticationError';
+  }
+}
+
+export class AccessDeniedError extends LLMError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(message ?? `Access denied for provider '${provider}'`, {
+      provider,
+      retryable: false,
+      status_code: 403,
+      cause
+    });
+    this.name = 'AccessDeniedError';
+  }
+}
+
+export class NotFoundError extends LLMError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(message ?? `Requested resource not found for provider '${provider}'`, {
+      provider,
+      retryable: false,
+      status_code: 404,
+      cause
+    });
+    this.name = 'NotFoundError';
   }
 }
 
@@ -42,15 +77,95 @@ export class RateLimitError extends LLMError {
   }
 }
 
-export class OverloadedError extends LLMError {
-  constructor(provider: string, message?: string, cause?: unknown) {
-    super(message ?? `Provider '${provider}' is overloaded`, {
+export class ServerError extends LLMError {
+  constructor(provider: string, opts?: { status_code?: number; message?: string; cause?: unknown }) {
+    const statusCode = opts?.status_code ?? 500;
+    super(opts?.message ?? `Provider '${provider}' server error (${statusCode})`, {
       provider,
       retryable: true,
+      status_code: statusCode,
+      cause: opts?.cause,
+    });
+    this.name = 'ServerError';
+  }
+}
+
+export class QuotaExceededError extends LLMError {
+  constructor(provider: string, opts?: { message?: string; status_code?: number; cause?: unknown }) {
+    super(opts?.message ?? `Quota exhausted for provider '${provider}'`, {
+      provider,
+      retryable: false,
+      status_code: opts?.status_code ?? 429,
+      cause: opts?.cause
+    });
+    this.name = 'QuotaExceededError';
+  }
+}
+
+export type StreamErrorPhase = 'transport' | 'sse_parse' | 'idle_timeout';
+
+export class StreamError extends LLMError {
+  readonly partial_content?: string;
+  readonly phase?: StreamErrorPhase;
+
+  constructor(
+    provider: string,
+    opts?: { partial_content?: string; phase?: StreamErrorPhase; message?: string; cause?: unknown }
+  ) {
+    super(opts?.message ?? `Stream failed for provider '${provider}'`, {
+      provider,
+      retryable: false,
+      cause: opts?.cause
+    });
+    this.name = 'StreamError';
+    this.partial_content = opts?.partial_content;
+    this.phase = opts?.phase;
+  }
+}
+
+export class OverloadedError extends ServerError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(provider, {
       status_code: 503,
-      cause
+      message: message ?? `Provider '${provider}' is overloaded`,
+      cause,
     });
     this.name = 'OverloadedError';
+  }
+}
+
+export class AbortError extends LLMError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(message ?? `Request aborted for provider '${provider}'`, {
+      provider,
+      retryable: false,
+      cause,
+    });
+    this.name = 'AbortError';
+  }
+}
+
+export class InvalidToolCallError extends LLMError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(message ?? `Invalid tool call for provider '${provider}'`, {
+      provider,
+      retryable: false,
+      status_code: 400,
+      cause,
+    });
+    this.name = 'InvalidToolCallError';
+  }
+}
+
+export class UnsupportedToolChoiceError extends LLMError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(message ?? `Unsupported tool choice for provider '${provider}'`, {
+      provider,
+      retryable: false,
+      status_code: 400,
+      cause,
+    });
+    this.name = 'UnsupportedToolChoiceError';
   }
 }
 
@@ -115,7 +230,7 @@ export class TimeoutError extends LLMError {
 export class ConfigurationError extends LLMError {
   constructor(message?: string, cause?: unknown) {
     super(
-      message ?? 'No LLM provider configured. Set at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY',
+      message ?? 'No LLM provider configured. Set at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENAI_COMPATIBLE_BASE_URL, GEMINI_API_KEY',
       { provider: 'none', retryable: false, cause }
     );
     this.name = 'ConfigurationError';

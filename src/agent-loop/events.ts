@@ -1,4 +1,6 @@
-// Agent-loop events — Sprint 007 + Sprint 011
+import type { SessionState } from './types.js';
+
+// Agent-loop events — additive lifecycle + observability contract.
 
 export interface AgentSessionStartedEvent {
   type: 'agent_session_started';
@@ -10,8 +12,26 @@ export interface AgentSessionStartedEvent {
   state?: string;
 }
 
+export interface AgentUserInputEvent {
+  type: 'agent_user_input';
+  session_id: string;
+  source: 'submit' | 'follow_up';
+  text: string;
+}
+
 export interface AgentTurnStartedEvent {
   type: 'agent_turn_started';
+  turn_number: number;
+}
+
+export interface AgentSteeringInjectedEvent {
+  type: 'agent_steering_injected';
+  session_id: string;
+  message: string;
+}
+
+export interface AgentAssistantTextStartEvent {
+  type: 'agent_assistant_text_start';
   turn_number: number;
 }
 
@@ -20,11 +40,26 @@ export interface AgentTextDeltaEvent {
   text: string;
 }
 
+export interface AgentAssistantTextEndEvent {
+  type: 'agent_assistant_text_end';
+  turn_number: number;
+  char_count: number;
+}
+
 export interface AgentToolCallStartedEvent {
   type: 'agent_tool_call_started';
   call_id: string;
   tool_name: string;
   arguments: Record<string, unknown>;
+}
+
+export interface AgentToolCallOutputDeltaEvent {
+  type: 'agent_tool_call_output_delta';
+  call_id: string;
+  tool_name: string;
+  delta: string;
+  chunk_index: number;
+  chunk_count: number;
 }
 
 export interface AgentToolCallCompletedEvent {
@@ -45,6 +80,34 @@ export interface AgentLoopDetectedEvent {
   repetitions: number;
 }
 
+export interface AgentProcessingEndedEvent {
+  type: 'agent_processing_ended';
+  session_id: string;
+  state: SessionState;
+  pending_inputs: number;
+}
+
+export interface AgentTurnLimitReachedEvent {
+  type: 'agent_turn_limit_reached';
+  session_id: string;
+  max_turns: number;
+}
+
+export type AgentWarningCode = 'context_window_pressure' | 'tool_output_truncated';
+
+export interface AgentWarningEvent {
+  type: 'agent_warning';
+  session_id: string;
+  code: AgentWarningCode;
+  message: string;
+}
+
+export interface AgentErrorEvent {
+  type: 'agent_error';
+  session_id: string;
+  message: string;
+}
+
 export interface AgentSessionCompletedEvent {
   type: 'agent_session_completed';
   status: string;
@@ -53,6 +116,21 @@ export interface AgentSessionCompletedEvent {
   duration_ms: number;
   session_id?: string;
   final_state?: string;
+}
+
+export interface AgentSessionEndedEvent {
+  type: 'agent_session_ended';
+  session_id: string;
+  reason: 'closed' | 'aborted';
+  final_state: SessionState;
+}
+
+export interface ContextWindowWarningEvent {
+  type: 'context_window_warning';
+  session_id: string;
+  usage_pct: number;
+  estimated_tokens: number;
+  context_window: number;
 }
 
 // Subagent lifecycle events
@@ -88,12 +166,23 @@ export interface SubagentMessageEvent {
 
 export type AgentEvent =
   | AgentSessionStartedEvent
+  | AgentUserInputEvent
   | AgentTurnStartedEvent
+  | AgentSteeringInjectedEvent
+  | AgentAssistantTextStartEvent
   | AgentTextDeltaEvent
+  | AgentAssistantTextEndEvent
   | AgentToolCallStartedEvent
+  | AgentToolCallOutputDeltaEvent
   | AgentToolCallCompletedEvent
   | AgentLoopDetectedEvent
+  | AgentProcessingEndedEvent
+  | AgentTurnLimitReachedEvent
+  | AgentWarningEvent
+  | AgentErrorEvent
   | AgentSessionCompletedEvent
+  | AgentSessionEndedEvent
+  | ContextWindowWarningEvent
   | SubagentSpawnedEvent
   | SubagentCompletedEvent
   | SubagentMessageEvent;

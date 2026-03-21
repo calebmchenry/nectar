@@ -77,6 +77,11 @@ export class EventRenderer {
         );
         break;
       }
+      case 'stage_failed': {
+        const detail = event.outcome.error_message ?? event.outcome.stderr ?? 'stage failed';
+        this.write(this.theme.fail(`${this.theme.icons.fail} Stage [${event.node_id}] failed: ${detail}`));
+        break;
+      }
       case 'run_completed': {
         const seconds = (event.duration_ms / 1000).toFixed(2);
         this.write(
@@ -84,6 +89,10 @@ export class EventRenderer {
             `${this.theme.icons.honey} Garden pollinated! ${event.completed_nodes} petals, ${seconds}s total`
           )
         );
+        break;
+      }
+      case 'pipeline_failed': {
+        this.write(this.theme.fail(`${this.theme.icons.wilted} Pipeline failed: ${event.message}`));
         break;
       }
       case 'run_error': {
@@ -125,6 +134,24 @@ export class EventRenderer {
       case 'human_answer': {
         const sourceTag = event.source === 'user' ? '' : ` (${event.source})`;
         this.write(this.theme.success(`${this.theme.icons.success} Selected: ${event.selected_label}${sourceTag}`));
+        break;
+      }
+      case 'interview_started': {
+        this.write(this.theme.info(`    Interview started [${event.question_id}] (${event.stage})`));
+        break;
+      }
+      case 'interview_completed': {
+        const seconds = (event.duration_ms / 1000).toFixed(2);
+        this.write(this.theme.success(`    Interview completed: ${event.answer} (${seconds}s)`));
+        break;
+      }
+      case 'interview_timeout': {
+        const seconds = (event.duration_ms / 1000).toFixed(2);
+        this.write(this.theme.warn(`    Interview timed out (${event.stage}, ${seconds}s)`));
+        break;
+      }
+      case 'interview_inform': {
+        this.write(this.theme.info(`    [${event.stage}] ${event.message}`));
         break;
       }
       case 'parallel_started': {
@@ -189,6 +216,14 @@ export class EventRenderer {
         this.write(
           this.theme.info(
             `    Agent finished: ${event.turn_count} turns, ${event.tool_call_count} tool calls (${seconds}s)`
+          )
+        );
+        break;
+      }
+      case 'context_window_warning': {
+        this.write(
+          this.theme.warn(
+            `    Context window warning: ${event.usage_pct.toFixed(1)}% (${event.estimated_tokens}/${event.context_window})`
           )
         );
         break;

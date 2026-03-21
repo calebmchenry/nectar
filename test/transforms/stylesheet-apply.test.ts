@@ -119,7 +119,7 @@ describe('applyStylesheet transform', () => {
     expect(graph.nodeMap.get('review')?.reasoningEffort).toBe('high');
   });
 
-  it('integrates into pipeline: runs between goal expansion and validation', () => {
+  it('integrates into pipeline: runs between goal expansion and validation', async () => {
     const graph = parseGardenSource(`digraph G {
       model_stylesheet="box { llm_model: claude-sonnet-4-20250514; llm_provider: simulation }"
       start [shape=Mdiamond]
@@ -128,7 +128,7 @@ describe('applyStylesheet transform', () => {
       start -> impl -> end
     }`);
 
-    const result = transformAndValidate(graph);
+    const result = await transformAndValidate(graph);
     expect(result.graph.nodeMap.get('impl')?.llmModel).toBe('claude-sonnet-4-20250514');
     expect(result.graph.nodeMap.get('impl')?.llmProvider).toBe('simulation');
   });

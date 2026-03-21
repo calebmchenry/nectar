@@ -11,7 +11,8 @@
   },
   "scripts": {
     "prebuild": "node scripts/release/write-version.mjs",
-    "build": "tsc -p tsconfig.json",
+    "build:hive": "npm --prefix hive run build && node scripts/hive/embed-assets.mjs",
+    "build": "npm run build:hive && tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "tsx src/cli/index.ts",
@@ -19,6 +20,7 @@
     "release": "npm version patch && git push --follow-tags"
   },
   "dependencies": {
+    "@viz-js/viz": "^3.21.0",
     "@ts-graphviz/parser": "^0.4.0",
     "ajv": "^8.18.0",
     "chalk": "^5.4.1",

@@ -2,7 +2,7 @@ import AjvModule from 'ajv';
 import type { ToolDefinition } from '../llm/tools.js';
 import type { ExecutionEnvironment } from './execution-environment.js';
 import type { ToolCallEnvelope, ToolResultEnvelope } from './types.js';
-import { truncateToolOutput } from './truncation.js';
+import { TOOL_LINE_CAPS, truncateToolOutput } from './truncation.js';
 import { TOOL_OUTPUT_LIMITS } from './types.js';
 
 export type ToolHandler = (
@@ -64,7 +64,11 @@ export class ToolRegistry {
 
   async execute(
     call: ToolCallEnvelope,
-    env: ExecutionEnvironment
+    env: ExecutionEnvironment,
+    options?: {
+      output_limits?: Record<string, number>;
+      line_limits?: Record<string, number>;
+    }
   ): Promise<ToolResultEnvelope> {
     const tool = this.tools.get(call.name);
     if (!tool) {
@@ -92,8 +96,16 @@ export class ToolRegistry {
 
     try {
       const result = await tool.handler(call.arguments, env);
-      const charLimit = TOOL_OUTPUT_LIMITS[call.name] ?? 30_000;
-      const { preview, truncated } = truncateToolOutput(call.name, result, charLimit);
+      const outputLimits = {
+        ...TOOL_OUTPUT_LIMITS,
+        ...(options?.output_limits ?? {}),
+      };
+      const lineLimits = {
+        ...TOOL_LINE_CAPS,
+        ...(options?.line_limits ?? {}),
+      };
+      const charLimit = outputLimits[call.name] ?? 30_000;
+      const { preview, truncated } = truncateToolOutput(call.name, result, charLimit, lineLimits);
 
       return {
         call_id: call.call_id,
@@ -113,6 +125,10 @@ export class ToolRegistry {
 
   has(name: string): boolean {
     return this.tools.has(name);
+  }
+
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
   }
 
   /**

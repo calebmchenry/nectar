@@ -109,7 +109,14 @@ function applyBudget(files: InstructionFile[], budget: number): string {
 
 async function tryReadFile(filePath: string): Promise<string | null> {
   try {
-    return await readFile(filePath, 'utf8');
+    const bytes = await readFile(filePath);
+    const maxCheck = Math.min(bytes.length, 1024);
+    for (let i = 0; i < maxCheck; i++) {
+      if (bytes[i] === 0) {
+        return null;
+      }
+    }
+    return bytes.toString('utf8');
   } catch {
     return null;
   }

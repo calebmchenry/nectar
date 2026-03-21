@@ -7,6 +7,12 @@ export interface SessionConfig {
   max_tool_rounds_per_input: number;
   default_command_timeout_ms: number;
   workspace_root: string;
+  max_command_timeout_ms?: number;
+  reasoning_effort?: 'low' | 'medium' | 'high';
+  tool_output_limits?: Record<string, number>;
+  tool_line_limits?: Record<string, number>;
+  enable_loop_detection?: boolean;
+  loop_detection_window?: number;
   max_follow_ups?: number;
 }
 
@@ -14,6 +20,11 @@ export const DEFAULT_SESSION_CONFIG: Omit<SessionConfig, 'workspace_root'> = {
   max_turns: 12,
   max_tool_rounds_per_input: 10,
   default_command_timeout_ms: 10_000,
+  max_command_timeout_ms: 600_000,
+  tool_output_limits: {},
+  tool_line_limits: {},
+  enable_loop_detection: true,
+  loop_detection_window: 10,
   max_follow_ups: 10,
 };
 
@@ -22,6 +33,7 @@ export interface WorkItem {
   resolve: (r: SessionResult) => void;
   reject: (e: Error) => void;
   isFollowUp: boolean;
+  provider_options?: Record<string, unknown>;
 }
 
 export type SessionStatus = 'success' | 'failure' | 'aborted';
@@ -52,12 +64,15 @@ export interface ToolResultEnvelope {
 /** Per-tool default character limits for model-visible output */
 export const TOOL_OUTPUT_LIMITS: Record<string, number> = {
   read_file: 50_000,
+  read_many_files: 120_000,
+  list_dir: 40_000,
   shell: 30_000,
   grep: 20_000,
-  glob: 10_000,
+  glob: 20_000,
   write_file: 1_000,
-  edit_file: 5_000,
-  apply_patch: 5_000,
+  edit_file: 10_000,
+  apply_patch: 10_000,
+  spawn_agent: 20_000,
 };
 
 // --- Tool Safety Classification (GAP-45) ---
@@ -66,6 +81,8 @@ export type ToolSafety = 'read_only' | 'mutating';
 
 export const TOOL_SAFETY: Record<string, ToolSafety> = {
   read_file: 'read_only',
+  read_many_files: 'read_only',
+  list_dir: 'read_only',
   grep: 'read_only',
   glob: 'read_only',
   write_file: 'mutating',
@@ -123,6 +140,7 @@ export interface SubAgentHandle {
   task: string;
   status: SubagentHandleStatus;
   working_dir: string;
+  model?: string;
   started_at: string;
   result_promise: Promise<SubAgentResult>;
   result?: SubAgentResult;
