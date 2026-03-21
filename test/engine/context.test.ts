@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ExecutionContext } from '../../src/engine/context.js';
+import { ExecutionContext, NoOpContextLock } from '../../src/engine/context.js';
 
 describe('ExecutionContext', () => {
   it('get/set works', () => {
@@ -79,5 +79,15 @@ describe('ExecutionContext.appendLog / getLog (A10)', () => {
 
     expect(ctx2.getLog()).toEqual(['log-a']);
     expect(ctx2.get('key')).toBe('val');
+  });
+});
+
+describe('NoOpContextLock (A2)', () => {
+  it('implements the ContextLock interface as a no-op', async () => {
+    const lock = new NoOpContextLock();
+    await lock.acquireRead();
+    await lock.acquireWrite();
+    await lock.release();
+    expect(lock).toBeInstanceOf(NoOpContextLock);
   });
 });

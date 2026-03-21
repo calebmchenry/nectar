@@ -61,12 +61,13 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
 
   const exitNodes = graph.nodes.filter((node) => node.kind === 'exit');
   const rootExitNodes = exitNodes.filter((node) => !node.provenance);
-  if (rootExitNodes.length < 1) {
+  if (rootExitNodes.length !== 1) {
     diagnostics.push({
       severity: 'error',
-      code: 'MISSING_EXIT',
-      message: 'Expected at least one exit node (Msquare).',
-      file: graph.dotPath
+      code: 'EXIT_NODE_COUNT',
+      message: `Expected exactly one root exit node (Msquare), found ${rootExitNodes.length}.`,
+      file: graph.dotPath,
+      location: rootExitNodes[0]?.location
     });
   }
 

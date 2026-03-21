@@ -46,7 +46,7 @@ function asResponse(response: MockResponse): ServerResponse {
 }
 
 describe('server SSE helpers', () => {
-  it('finite streams auto-close after terminal events and emit close callbacks once', () => {
+  it('finite streams close synchronously after terminal events and emit close callbacks once', () => {
     const req = new MockRequest();
     const res = new MockResponse();
     const stream = createFiniteSseStream({
@@ -72,6 +72,25 @@ describe('server SSE helpers', () => {
 
     expect(stream.send('done', { status: 'duplicate' }, 3)).toBe(false);
     expect(closeCount).toBe(1);
+  });
+
+  it('finite streams close after idle timeout when no terminal event is emitted', async () => {
+    const req = new MockRequest();
+    const res = new MockResponse();
+    const stream = createFiniteSseStream({
+      req: asRequest(req),
+      res: asResponse(res),
+      terminal_events: new Set(['done']),
+      keepalive_ms: 60_000,
+      idle_timeout_ms: 20,
+    });
+
+    expect(stream.send('progress', { step: 1 }, 1)).toBe(true);
+    expect(stream.terminalEmitted()).toBe(false);
+    expect(res.writableEnded).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(res.writableEnded).toBe(true);
   });
 
   it('persistent streams close and clean up when the client disconnects', () => {

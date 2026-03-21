@@ -5,11 +5,14 @@ digraph ConditionalBranch {
     label="Branch",
     script="node scripts/compliance_loop.mjs audit"
   ]
-  success_exit [shape=Msquare, label="Success"]
-  fail_exit [shape=Msquare, label="Fail"]
+  success [shape=parallelogram, label="Success", script="echo success"]
+  fail [shape=parallelogram, label="Fail", script="echo fail"]
+  done [shape=Msquare, label="Done"]
 
   start -> branch
-  branch -> success_exit [condition="outcome=success"]
-  branch -> fail_exit [condition="outcome=fail"]
-  branch -> fail_exit [label="Fallback"]
+  branch -> success [condition="outcome=success"]
+  branch -> fail [condition="outcome=fail"]
+  branch -> fail [label="Fallback"]
+  success -> done
+  fail -> done
 }

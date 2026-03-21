@@ -3,11 +3,13 @@ import { GeminiAdapter } from '../../../src/llm/adapters/gemini.js';
 import {
   AccessDeniedError,
   AuthenticationError,
+  ContextLengthError,
   ContextWindowError,
   InvalidRequestError,
   OverloadedError,
   QuotaExceededError,
   RateLimitError,
+  RequestTimeoutError,
   StreamError,
 } from '../../../src/llm/errors.js';
 import type { StreamEvent } from '../../../src/llm/streaming.js';
@@ -45,6 +47,16 @@ function sseResponse(events: string[]) {
 }
 
 describe('GeminiAdapter', () => {
+  describe('adapter capabilities', () => {
+    it('supports tool_choice auto/none/required but not named', () => {
+      const adapter = new GeminiAdapter('key', 'https://test.api');
+      expect(adapter.supports_tool_choice('auto')).toBe(true);
+      expect(adapter.supports_tool_choice('none')).toBe(true);
+      expect(adapter.supports_tool_choice('required')).toBe(true);
+      expect(adapter.supports_tool_choice('named')).toBe(false);
+    });
+  });
+
   describe('generate', () => {
     it('sends correct request and translates response', async () => {
       mockFetch({
@@ -182,6 +194,21 @@ describe('GeminiAdapter', () => {
       const result = await adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] });
       expect(result.stop_reason).toBe('length');
       expect(result.finish_reason.raw).toBe('MAX_TOKENS');
+    });
+
+    it('maps RECITATION finish reason to content_filter', async () => {
+      mockFetch({
+        candidates: [{
+          content: { parts: [{ text: 'blocked' }] },
+          finishReason: 'RECITATION'
+        }],
+        usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 1 }
+      });
+
+      const adapter = new GeminiAdapter('key', 'https://test.api');
+      const result = await adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] });
+      expect(result.finish_reason.reason).toBe('content_filter');
+      expect(result.finish_reason.raw).toBe('RECITATION');
     });
 
     it('passes system instruction separately', async () => {
@@ -389,6 +416,32 @@ describe('GeminiAdapter', () => {
   });
 
   describe('error classification', () => {
+    it('408 → RequestTimeoutError', async () => {
+      mockFetch({}, { ok: false, status: 408 });
+      const adapter = new GeminiAdapter('key', 'https://test.api');
+      await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
+        .rejects.toThrow(RequestTimeoutError);
+    });
+
+    it('413 → ContextLengthError', async () => {
+      mockFetch({}, { ok: false, status: 413 });
+      const adapter = new GeminiAdapter('key', 'https://test.api');
+      await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
+        .rejects.toThrow(ContextLengthError);
+    });
+
+    it('422 → InvalidRequestError with status 422', async () => {
+      mockFetch({ error: { message: 'unprocessable' } }, { ok: false, status: 422 });
+      const adapter = new GeminiAdapter('key', 'https://test.api');
+      try {
+        await adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] });
+        expect.unreachable('expected InvalidRequestError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(InvalidRequestError);
+        expect((error as InvalidRequestError).status_code).toBe(422);
+      }
+    });
+
     it('401 → AuthenticationError', async () => {
       mockFetch({}, { ok: false, status: 401 });
       const adapter = new GeminiAdapter('bad', 'https://test.api');
@@ -469,11 +522,40 @@ describe('GeminiAdapter', () => {
       expect(events.some((e) => e.type === 'text_start')).toBe(true);
       expect(events.filter((e) => e.type === 'content_delta')).toHaveLength(2);
       expect(events.some((e) => e.type === 'text_end')).toBe(true);
+      const textStart = events.find((e): e is Extract<StreamEvent, { type: 'text_start' }> => e.type === 'text_start');
+      expect(textStart?.text_id).toBe('text_0');
+      const deltas = events.filter((e): e is Extract<StreamEvent, { type: 'content_delta' }> => e.type === 'content_delta');
+      expect(deltas.every((event) => event.text_id === 'text_0')).toBe(true);
+      const textEnd = events.find((e): e is Extract<StreamEvent, { type: 'text_end' }> => e.type === 'text_end');
+      expect(textEnd?.text_id).toBe('text_0');
       const end = events.find((e) => e.type === 'stream_end');
       expect(end).toBeDefined();
       if (end?.type === 'stream_end') {
         expect(end.response?.usage.total_tokens).toBe(7);
       }
+    });
+
+    it('emits provider_event for unknown provider stream events', async () => {
+      sseResponse([
+        'event: ping\ndata: {"type":"ping","heartbeat":true}',
+        'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}',
+      ]);
+
+      const adapter = new GeminiAdapter('key', 'https://test.api');
+      const events: StreamEvent[] = [];
+      for await (const event of adapter.stream({ messages: [{ role: 'user', content: 'Hi' }] })) {
+        events.push(event);
+      }
+
+      const providerEvent = events.find((event): event is Extract<StreamEvent, { type: 'provider_event' }> => event.type === 'provider_event');
+      expect(providerEvent).toEqual({
+        type: 'provider_event',
+        provider: 'gemini',
+        provider_event: {
+          type: 'ping',
+          data: { type: 'ping', heartbeat: true },
+        },
+      });
     });
 
     it('emits thinking_start and thinking_end around thought deltas', async () => {
@@ -542,6 +624,25 @@ describe('GeminiAdapter', () => {
           // consume
         }
       }).rejects.toThrow(StreamError);
+    });
+
+    it('maps RECITATION stream finish reason to content_filter response reason', async () => {
+      sseResponse([
+        'data: {"candidates":[{"content":{"parts":[{"text":"blocked"}]},"finishReason":"RECITATION"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1}}'
+      ]);
+
+      const adapter = new GeminiAdapter('key', 'https://test.api');
+      const events: StreamEvent[] = [];
+      for await (const event of adapter.stream({ messages: [{ role: 'user', content: 'Hi' }] })) {
+        events.push(event);
+      }
+
+      const end = events.find((event) => event.type === 'stream_end');
+      expect(end?.type).toBe('stream_end');
+      if (end?.type === 'stream_end') {
+        expect(end.response.finish_reason.reason).toBe('content_filter');
+        expect(end.response.finish_reason.raw).toBe('RECITATION');
+      }
     });
   });
 });

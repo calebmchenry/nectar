@@ -29,6 +29,13 @@ describe('ToolRegistry', () => {
     expect(defs[0]!.description).toBe('A test tool');
   });
 
+  it('rejects invalid tool names at registration time', () => {
+    const registry = new ToolRegistry();
+    expect(() => {
+      registry.register('bad-name', 'Invalid', { properties: {} }, async () => 'nope');
+    }).toThrow(/Tool name/);
+  });
+
   it('executes a tool successfully', async () => {
     const registry = new ToolRegistry();
     registry.register('greet', 'Greet', {
@@ -44,6 +51,8 @@ describe('ToolRegistry', () => {
 
     expect(result.is_error).toBe(false);
     expect(result.content).toBe('Hello World');
+    expect(result.full_content).toBe('Hello World');
+    expect(result.truncated).toBe(false);
     expect(result.call_id).toBe('call-1');
   });
 

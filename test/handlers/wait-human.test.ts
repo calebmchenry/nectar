@@ -64,6 +64,31 @@ describe('WaitHumanHandler', () => {
     expect(outcome.preferred_label).toBe('Yes');
   });
 
+  it('uses CONFIRMATION type for affirmative/decline choices and renders confirmation guidance', async () => {
+    const askedQuestions: Array<{ type: string; text: string }> = [];
+    const interviewer = {
+      async ask(question: { type: string; text: string }) {
+        askedQuestions.push({ type: question.type, text: question.text });
+        return { selected_label: 'Approve', source: 'user' as const };
+      },
+      async ask_multiple() {
+        return [];
+      },
+      inform() {
+        // no-op
+      },
+    };
+    const handler = new WaitHumanHandler(interviewer);
+
+    const edges = [makeEdge('Approve', 'proceed'), makeEdge('Decline', 'stop')];
+    const outcome = await handler.execute(makeInput(makeNode({ label: 'Deploy now?' }), edges));
+
+    expect(outcome.status).toBe('success');
+    expect(askedQuestions).toHaveLength(1);
+    expect(askedQuestions[0]?.type).toBe('CONFIRMATION');
+    expect(askedQuestions[0]?.text).toContain('affirmative option');
+  });
+
   it('fails with 0 labeled edges', async () => {
     const interviewer = new AutoApproveInterviewer();
     const handler = new WaitHumanHandler(interviewer);

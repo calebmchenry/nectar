@@ -25,6 +25,8 @@ type EvaluatedValue =
   | { kind: 'string'; value: string }
   | { kind: 'boolean'; value: boolean };
 
+const RESERVED_ROOTS = new Set(['outcome', 'preferred_label', 'context', 'steps', 'artifacts']);
+
 export { ConditionSyntaxError };
 
 export function parseConditionAst(expression: string): ConditionExpr {
@@ -91,7 +93,7 @@ function evaluateNode(node: ConditionExpr, scope: ConditionScope): EvaluatedValu
   }
 
   if (node.type === 'binary') {
-    const left = toComparableString(evaluateNode(node.left, scope));
+    const left = toComparableString(resolveBinaryOperand(node.left, scope, true));
     const right = toComparableString(evaluateNode(node.right, scope));
     const normalizeOutcomeEquality = isOutcomeVariable(node.left) || isOutcomeVariable(node.right);
     return {
@@ -190,7 +192,51 @@ function resolveVariable(path: string[], scope: ConditionScope): ResolvedValue {
     };
   }
 
+  if (!RESERVED_ROOTS.has(root)) {
+    const contextKey = path.join('.');
+    const hasKey = Object.prototype.hasOwnProperty.call(scope.context, contextKey);
+    return {
+      defined: hasKey,
+      value: hasKey ? scope.context[contextKey] ?? '' : '',
+    };
+  }
+
   return { defined: false, value: '' };
+}
+
+function resolveBinaryOperand(
+  node: ConditionExpr,
+  scope: ConditionScope,
+  allowContextFallback: boolean,
+): EvaluatedValue {
+  if (allowContextFallback && node.type === 'literal') {
+    const fallback = resolveLiteralAsContextKey(node.value, scope);
+    if (fallback !== undefined) {
+      return { kind: 'string', value: fallback };
+    }
+  }
+  return evaluateNode(node, scope);
+}
+
+function resolveLiteralAsContextKey(value: string, scope: ConditionScope): string | undefined {
+  if (!isIdentifierChain(value)) {
+    return undefined;
+  }
+
+  const root = value.split('.', 1)[0];
+  if (!root || RESERVED_ROOTS.has(root)) {
+    return undefined;
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(scope.context, value)) {
+    return undefined;
+  }
+
+  return scope.context[value] ?? '';
+}
+
+function isIdentifierChain(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(value);
 }
 
 function evaluateBinary(op: BinaryOp, left: string, right: string, normalizeOutcomeEquality: boolean): boolean {

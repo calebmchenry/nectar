@@ -10,6 +10,7 @@ export interface RetryConfig {
   base_delay_ms: number;
   max_delay_ms: number;
   jitter: boolean;
+  on_retry?: (error: LLMError, attempt: number, delay_ms: number) => void | Promise<void>;
 }
 
 const DEFAULT_CONFIG: RetryConfig = {
@@ -55,12 +56,13 @@ export function createRetryMiddleware(config?: Partial<RetryConfig>): Middleware
       let lastError: LLMError | undefined;
       const timeout = resolveTimeout(request.timeout, request.timeout_ms);
       const startedAt = Date.now();
+      const maxRetries = request.max_retries ?? cfg.max_retries;
 
       const remainingBudgetMs = (): number => {
         return Math.max(0, timeout.request_ms - (Date.now() - startedAt));
       };
 
-      for (let attempt = 0; attempt <= cfg.max_retries; attempt++) {
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const remainingBeforeAttempt = remainingBudgetMs();
         if (remainingBeforeAttempt <= 0) {
           throw new TimeoutError(request.provider ?? 'unknown', `Retry budget exhausted after ${timeout.request_ms}ms.`);
@@ -70,11 +72,14 @@ export function createRetryMiddleware(config?: Partial<RetryConfig>): Middleware
           if (request.abort_signal?.aborted) {
             throw new DOMException('Aborted', 'AbortError');
           }
-          const retryAfter = lastError instanceof RateLimitError ? lastError.retry_after_ms : undefined;
+          const retryAfter = lastError?.retry_after_ms;
           validateRetryAfterDelay(request.provider ?? lastError?.provider ?? 'unknown', retryAfter, cfg.max_delay_ms);
           const delay = computeDelay(attempt, cfg, retryAfter);
           if (delay >= remainingBeforeAttempt) {
             throw new TimeoutError(request.provider ?? 'unknown', `Retry budget exhausted after ${timeout.request_ms}ms.`);
+          }
+          if (lastError) {
+            await cfg.on_retry?.(lastError, attempt, delay);
           }
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
@@ -105,12 +110,13 @@ export function createRetryMiddleware(config?: Partial<RetryConfig>): Middleware
       let yieldedContent = false;
       const timeout = resolveTimeout(request.timeout, request.timeout_ms);
       const startedAt = Date.now();
+      const maxRetries = request.max_retries ?? cfg.max_retries;
 
       const remainingBudgetMs = (): number => {
         return Math.max(0, timeout.request_ms - (Date.now() - startedAt));
       };
 
-      for (let attempt = 0; attempt <= cfg.max_retries; attempt++) {
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const remainingBeforeAttempt = remainingBudgetMs();
         if (remainingBeforeAttempt <= 0) {
           throw new TimeoutError(request.provider ?? 'unknown', `Retry budget exhausted after ${timeout.request_ms}ms.`);
@@ -120,11 +126,14 @@ export function createRetryMiddleware(config?: Partial<RetryConfig>): Middleware
           if (request.abort_signal?.aborted) {
             throw new DOMException('Aborted', 'AbortError');
           }
-          const retryAfter = lastError instanceof RateLimitError ? lastError.retry_after_ms : undefined;
+          const retryAfter = lastError?.retry_after_ms;
           validateRetryAfterDelay(request.provider ?? lastError?.provider ?? 'unknown', retryAfter, cfg.max_delay_ms);
           const delay = computeDelay(attempt, cfg, retryAfter);
           if (delay >= remainingBeforeAttempt) {
             throw new TimeoutError(request.provider ?? 'unknown', `Retry budget exhausted after ${timeout.request_ms}ms.`);
+          }
+          if (lastError) {
+            await cfg.on_retry?.(lastError, attempt, delay);
           }
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
@@ -171,6 +180,22 @@ export function withRetry(
   return {
     get provider_name() {
       return adapter.provider_name;
+    },
+
+    async initialize(): Promise<void> {
+      if (adapter.initialize) {
+        await adapter.initialize();
+      }
+    },
+
+    async close(): Promise<void> {
+      if (adapter.close) {
+        await adapter.close();
+      }
+    },
+
+    supports_tool_choice(mode: import('./adapters/types.js').ToolChoiceMode): boolean {
+      return adapter.supports_tool_choice(mode);
     },
 
     async generate(request: GenerateRequest): Promise<GenerateResponse> {

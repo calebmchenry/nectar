@@ -87,11 +87,14 @@ describe('hive run flow integration', () => {
     const dotSource = `digraph HiveFlow {
       start [shape=Mdiamond]
       approve [shape=hexagon, label="Ship this change?"]
-      yes_exit [shape=Msquare]
-      no_exit [shape=Msquare]
+      deploy [shape=parallelogram, tool_command="echo deploying"]
+      reject [shape=parallelogram, tool_command="echo rejected"]
+      done [shape=Msquare]
       start -> approve
-      approve -> yes_exit [label="Yes"]
-      approve -> no_exit [label="No"]
+      approve -> deploy [label="Yes"]
+      approve -> reject [label="No"]
+      deploy -> done
+      reject -> done
     }`;
 
     const previewResponse = await fetch(`${server.base_url}/gardens/preview`, {
@@ -134,6 +137,18 @@ describe('hive run flow integration', () => {
     expect(resumeResponse.status).toBe(202);
 
     const resumedQuestion = await waitForQuestion(server.base_url, created.run_id);
+    expect(resumedQuestion.question_id).not.toBe(firstQuestion.question_id);
+
+    const staleAnswerResponse = await fetch(
+      `${server.base_url}/pipelines/${created.run_id}/questions/${firstQuestion.question_id}/answer`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ selected_label: 'Yes' }),
+      }
+    );
+    expect(staleAnswerResponse.status).toBe(409);
+
     const answerResponse = await fetch(
       `${server.base_url}/pipelines/${created.run_id}/questions/${resumedQuestion.question_id}/answer`,
       {

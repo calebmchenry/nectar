@@ -9,6 +9,7 @@ import {
   RateLimitError,
   OverloadedError,
   NetworkError,
+  ServerError,
   StreamError,
   TimeoutError,
 } from '../../src/llm/errors.js';
@@ -16,6 +17,7 @@ import {
 function mockAdapter(overrides: Partial<ProviderAdapter> = {}): ProviderAdapter {
   return {
     provider_name: 'test',
+    supports_tool_choice: () => true,
     generate: vi.fn(),
     async *stream() { /* empty */ },
     ...overrides
@@ -104,7 +106,17 @@ describe('withRetry', () => {
     expect(adapter.generate).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT retry stream on StreamError', async () => {
+  it('does NOT retry on TimeoutError', async () => {
+    const adapter = mockAdapter({
+      generate: vi.fn().mockRejectedValue(new TimeoutError('test'))
+    });
+
+    const wrapped = withRetry(adapter, { max_retries: 3, base_delay_ms: 1, max_delay_ms: 10, jitter: false });
+    await expect(wrapped.generate(dummyRequest)).rejects.toThrow(TimeoutError);
+    expect(adapter.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries stream on StreamError before any content is yielded', async () => {
     let callCount = 0;
     const adapter = mockAdapter({
       async *stream(): AsyncIterable<StreamEvent> {
@@ -119,7 +131,7 @@ describe('withRetry', () => {
         // no-op
       }
     }).rejects.toThrow(StreamError);
-    expect(callCount).toBe(1);
+    expect(callCount).toBe(4); // initial + 3 retries
   });
 
   it('throws last error when max retries exhausted', async () => {
@@ -170,6 +182,55 @@ describe('withRetry', () => {
     const elapsed = Date.now() - start;
     // Should have waited at least the retry_after_ms
     expect(elapsed).toBeGreaterThanOrEqual(40); // Allow some timing slack
+  });
+
+  it('respects retry_after_ms on any retryable provider error', async () => {
+    const adapter = mockAdapter({
+      generate: vi.fn()
+        .mockRejectedValueOnce(new ServerError('test', { status_code: 503, retry_after_ms: 40 }))
+        .mockResolvedValueOnce(dummyResponse),
+    });
+
+    const start = Date.now();
+    const wrapped = withRetry(adapter, { max_retries: 3, base_delay_ms: 1, max_delay_ms: 100, jitter: false });
+    await wrapped.generate(dummyRequest);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(30);
+  });
+
+  it('invokes on_retry(error, attempt, delay) before each retry sleep', async () => {
+    vi.useFakeTimers();
+    const onRetry = vi.fn();
+    try {
+      const adapter = mockAdapter({
+        generate: vi.fn()
+          .mockRejectedValueOnce(new RateLimitError('test'))
+          .mockRejectedValueOnce(new NetworkError('test'))
+          .mockResolvedValueOnce(dummyResponse),
+      });
+
+      const wrapped = withRetry(adapter, {
+        max_retries: 3,
+        base_delay_ms: 100,
+        max_delay_ms: 1000,
+        jitter: false,
+        on_retry: onRetry,
+      });
+
+      const pending = wrapped.generate(dummyRequest);
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toBe(dummyResponse);
+
+      expect(onRetry).toHaveBeenCalledTimes(2);
+      expect(onRetry.mock.calls[0]?.[0]).toBeInstanceOf(RateLimitError);
+      expect(onRetry.mock.calls[0]?.[1]).toBe(1);
+      expect(onRetry.mock.calls[0]?.[2]).toBe(100);
+      expect(onRetry.mock.calls[1]?.[0]).toBeInstanceOf(NetworkError);
+      expect(onRetry.mock.calls[1]?.[1]).toBe(2);
+      expect(onRetry.mock.calls[1]?.[2]).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('throws when Retry-After exceeds max_delay_ms', async () => {
@@ -263,5 +324,54 @@ describe('withRetry', () => {
     const adapter = mockAdapter();
     const wrapped = withRetry(adapter);
     expect(wrapped.provider_name).toBe('test');
+  });
+
+  it('forwards lifecycle and tool-choice capability methods', async () => {
+    const initialize = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    const supports = vi.fn((mode: 'auto' | 'none' | 'required' | 'named') => mode !== 'named');
+    const adapter = mockAdapter({
+      initialize,
+      close,
+      supports_tool_choice: supports,
+      generate: vi.fn().mockResolvedValue(dummyResponse),
+    });
+    const wrapped = withRetry(adapter);
+
+    await wrapped.initialize?.();
+    expect(initialize).toHaveBeenCalledTimes(1);
+    expect(wrapped.supports_tool_choice('auto')).toBe(true);
+    expect(wrapped.supports_tool_choice('named')).toBe(false);
+    expect(supports).toHaveBeenCalledWith('auto');
+    expect(supports).toHaveBeenCalledWith('named');
+    await wrapped.close?.();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('request.max_retries overrides configured max_retries', async () => {
+    const adapter = mockAdapter({
+      generate: vi.fn()
+        .mockRejectedValueOnce(new RateLimitError('test'))
+        .mockResolvedValueOnce(dummyResponse),
+    });
+    const wrapped = withRetry(adapter, { max_retries: 0, base_delay_ms: 1, max_delay_ms: 10, jitter: false });
+
+    const result = await wrapped.generate({
+      ...dummyRequest,
+      max_retries: 1,
+    });
+
+    expect(result).toBe(dummyResponse);
+    expect(adapter.generate).toHaveBeenCalledTimes(2);
+  });
+
+  it('request.max_retries=0 disables retries even when global config allows them', async () => {
+    const adapter = mockAdapter({
+      generate: vi.fn().mockRejectedValue(new RateLimitError('test')),
+    });
+    const wrapped = withRetry(adapter, { max_retries: 3, base_delay_ms: 1, max_delay_ms: 10, jitter: false });
+
+    await expect(wrapped.generate({ ...dummyRequest, max_retries: 0 })).rejects.toThrow(RateLimitError);
+    expect(adapter.generate).toHaveBeenCalledTimes(1);
   });
 });

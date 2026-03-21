@@ -5,7 +5,8 @@ export const grepSchema = {
   properties: {
     pattern: { type: 'string', description: 'Regex pattern to search for' },
     path: { type: 'string', description: 'Subdirectory to search (relative to workspace root)' },
-    include: { type: 'string', description: 'Glob pattern to filter files (e.g. "*.ts")' },
+    glob_filter: { type: 'string', description: 'Glob pattern to filter files (e.g. "*.ts")' },
+    include: { type: 'string', description: 'Deprecated alias for glob_filter' },
     case_insensitive: { type: 'boolean', default: false, description: 'Enable case-insensitive matching' },
     max_results: { type: 'integer', default: 200, description: 'Maximum number of results' },
   },
@@ -16,7 +17,7 @@ export const grepSchema = {
 export const grepHandler: ToolHandler = async (args, env) => {
   const pattern = args.pattern as string;
   const searchPath = args.path as string | undefined;
-  const include = args.include as string | undefined;
+  const include = (args.glob_filter ?? args.include) as string | undefined;
   const caseInsensitive = args.case_insensitive === true;
   const maxResults = (args.max_results as number | undefined) ?? 200;
 

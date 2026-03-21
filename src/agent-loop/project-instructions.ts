@@ -1,109 +1,149 @@
+import { execFile as execFileCallback } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 const MAX_BUDGET = 32 * 1024; // 32KB
+const execFile = promisify(execFileCallback);
 
 interface InstructionFile {
   path: string;
   content: string;
-  specificity: number; // higher = more specific (provider-specific > generic)
 }
 
+type RepoRootResolver = (cwd: string) => Promise<string | null>;
+
 /**
- * Discover project instruction files for a given provider.
- * Walks from workspace root upward, collecting AGENTS.md and provider-specific files.
+ * Discover project instruction files for a provider.
+ * Precedence:
+ * 1) Shallower directories first, deeper directories last
+ * 2) Within a directory: AGENTS.md first, provider-specific file second
+ * 3) Later entries override earlier ones
+ *
+ * Budgeting preserves highest-precedence entries by dropping from the front
+ * (lowest precedence) first.
  */
 export async function discoverInstructions(
   workspaceRoot: string,
-  providerName: string
+  providerName: string,
+  startDir: string = workspaceRoot,
+  resolveRepoRoot: RepoRootResolver = resolveRepoRootWithGit,
 ): Promise<string> {
+  const normalizedWorkspaceRoot = path.resolve(workspaceRoot);
+  const normalizedStartDir = path.resolve(startDir);
+  const effectiveCwd = isWithin(normalizedWorkspaceRoot, normalizedStartDir)
+    ? normalizedStartDir
+    : normalizedWorkspaceRoot;
+
+  const repoRoot = await resolveRepoRoot(effectiveCwd).catch(() => null);
+  const walkRoot = repoRoot && isWithin(repoRoot, effectiveCwd)
+    ? repoRoot
+    : normalizedWorkspaceRoot;
+  const directories = enumerateDirectories(walkRoot, effectiveCwd);
+
+  const providerFiles = providerSpecificFiles(providerName);
   const files: InstructionFile[] = [];
 
-  // Determine which files to look for based on provider
-  const genericFile = 'AGENTS.md';
-  const providerFiles: string[] = [];
-  switch (providerName) {
-    case 'anthropic':
-      providerFiles.push('CLAUDE.md');
-      break;
-    case 'gemini':
-      providerFiles.push('GEMINI.md');
-      break;
-    case 'openai':
-      providerFiles.push(path.join('.codex', 'instructions.md'));
-      break;
-  }
+  for (const directory of directories) {
+    const genericPath = path.join(directory, 'AGENTS.md');
+    const genericContent = await tryReadFile(genericPath);
+    if (genericContent !== null) {
+      files.push({ path: genericPath, content: genericContent });
+    }
 
-  // Walk from workspace root upward
-  let currentDir = workspaceRoot;
-  let depth = 0;
-
-  while (true) {
-    // Provider-specific files (higher specificity)
-    for (const pf of providerFiles) {
-      const content = await tryReadFile(path.join(currentDir, pf));
-      if (content !== null) {
-        files.push({
-          path: path.join(currentDir, pf),
-          content,
-          specificity: 100 - depth, // closer to workspace root = more specific for provider files
-        });
+    for (const providerFile of providerFiles) {
+      const providerPath = path.join(directory, providerFile);
+      const providerContent = await tryReadFile(providerPath);
+      if (providerContent !== null) {
+        files.push({ path: providerPath, content: providerContent });
       }
     }
-
-    // Generic AGENTS.md (lower specificity)
-    const genericContent = await tryReadFile(path.join(currentDir, genericFile));
-    if (genericContent !== null) {
-      files.push({
-        path: path.join(currentDir, genericFile),
-        content: genericContent,
-        specificity: 50 - depth, // generic always less specific than provider-specific
-      });
-    }
-
-    // Move up one directory
-    const parent = path.dirname(currentDir);
-    if (parent === currentDir) break; // reached filesystem root
-    currentDir = parent;
-    depth++;
   }
 
-  if (files.length === 0) return '';
+  if (files.length === 0) {
+    return '';
+  }
 
-  // Sort: most specific first
-  files.sort((a, b) => b.specificity - a.specificity);
-
-  // Apply budget: truncate least-specific files first
   return applyBudget(files, MAX_BUDGET);
 }
 
+function providerSpecificFiles(providerName: string): string[] {
+  switch (providerName) {
+    case 'anthropic':
+      return ['CLAUDE.md'];
+    case 'gemini':
+      return ['GEMINI.md'];
+    case 'openai':
+    case 'openai_compatible':
+      return [path.join('.codex', 'instructions.md')];
+    default:
+      return [];
+  }
+}
+
+function enumerateDirectories(root: string, target: string): string[] {
+  const normalizedRoot = path.resolve(root);
+  const normalizedTarget = path.resolve(target);
+  if (!isWithin(normalizedRoot, normalizedTarget)) {
+    return [normalizedRoot];
+  }
+
+  const relative = path.relative(normalizedRoot, normalizedTarget);
+  if (!relative) {
+    return [normalizedRoot];
+  }
+
+  const segments = relative.split(path.sep).filter((segment) => segment.length > 0);
+  const directories = [normalizedRoot];
+  let current = normalizedRoot;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    directories.push(current);
+  }
+  return directories;
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative.length === 0 || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function resolveRepoRootWithGit(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFile('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+      timeout: 1000,
+      windowsHide: true,
+    });
+    const resolved = stdout.trim();
+    return resolved.length > 0 ? path.resolve(resolved) : null;
+  } catch {
+    return null;
+  }
+}
+
 function applyBudget(files: InstructionFile[], budget: number): string {
-  let totalSize = files.reduce((sum, f) => sum + f.content.length, 0);
+  let included = files.slice();
+  let payload = formatInstructionFiles(included);
 
-  // If within budget, concat all
-  if (totalSize <= budget) {
-    return files
-      .map((f) => `--- ${f.path} ---\n${f.content}`)
-      .join('\n\n');
+  while (included.length > 1 && payload.length > budget) {
+    included = included.slice(1);
+    payload = formatInstructionFiles(included);
   }
 
-  // Truncate from least specific (end of sorted array)
-  const included = [...files];
-  while (totalSize > budget && included.length > 1) {
-    const removed = included.pop()!;
-    totalSize -= removed.content.length;
+  if (payload.length <= budget) {
+    return payload;
   }
 
-  // If still over budget, truncate the last remaining file
-  if (totalSize > budget && included.length === 1) {
-    included[0] = {
-      ...included[0]!,
-      content: included[0]!.content.slice(0, budget - 100) + '\n\n[... truncated to fit 32KB budget ...]',
-    };
-  }
+  const only = included[0]!;
+  const header = `--- ${only.path} ---\n`;
+  const suffix = '\n\n[... truncated to fit 32KB budget ...]';
+  const available = Math.max(0, budget - header.length - suffix.length);
+  return `${header}${only.content.slice(0, available)}${suffix}`;
+}
 
-  return included
-    .map((f) => `--- ${f.path} ---\n${f.content}`)
+function formatInstructionFiles(files: InstructionFile[]): string {
+  return files
+    .map((file) => `--- ${file.path} ---\n${file.content}`)
     .join('\n\n');
 }
 
@@ -111,7 +151,7 @@ async function tryReadFile(filePath: string): Promise<string | null> {
   try {
     const bytes = await readFile(filePath);
     const maxCheck = Math.min(bytes.length, 1024);
-    for (let i = 0; i < maxCheck; i++) {
+    for (let i = 0; i < maxCheck; i += 1) {
       if (bytes[i] === 0) {
         return null;
       }

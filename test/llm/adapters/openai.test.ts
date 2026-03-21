@@ -3,12 +3,14 @@ import { OpenAIAdapter } from '../../../src/llm/adapters/openai.js';
 import {
   AccessDeniedError,
   AuthenticationError,
+  ContextLengthError,
   ContextWindowError,
   InvalidRequestError,
   NotFoundError,
   OverloadedError,
   QuotaExceededError,
   RateLimitError,
+  RequestTimeoutError,
   StreamError,
 } from '../../../src/llm/errors.js';
 import type { StreamEvent } from '../../../src/llm/streaming.js';
@@ -46,6 +48,16 @@ function sseResponse(events: string[]) {
 }
 
 describe('OpenAIAdapter', () => {
+  describe('adapter capabilities', () => {
+    it('supports all tool_choice modes', () => {
+      const adapter = new OpenAIAdapter('key', 'https://test.api');
+      expect(adapter.supports_tool_choice('auto')).toBe(true);
+      expect(adapter.supports_tool_choice('none')).toBe(true);
+      expect(adapter.supports_tool_choice('required')).toBe(true);
+      expect(adapter.supports_tool_choice('named')).toBe(true);
+    });
+  });
+
   describe('generate', () => {
     it('sends correct request and translates response', async () => {
       mockFetch({
@@ -255,6 +267,32 @@ describe('OpenAIAdapter', () => {
   });
 
   describe('error classification', () => {
+    it('408 → RequestTimeoutError', async () => {
+      mockFetch({}, { ok: false, status: 408 });
+      const adapter = new OpenAIAdapter('key', 'https://test.api');
+      await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
+        .rejects.toThrow(RequestTimeoutError);
+    });
+
+    it('413 → ContextLengthError', async () => {
+      mockFetch({}, { ok: false, status: 413 });
+      const adapter = new OpenAIAdapter('key', 'https://test.api');
+      await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
+        .rejects.toThrow(ContextLengthError);
+    });
+
+    it('422 → InvalidRequestError with status 422', async () => {
+      mockFetch({ error: { message: 'unprocessable' } }, { ok: false, status: 422 });
+      const adapter = new OpenAIAdapter('key', 'https://test.api');
+      try {
+        await adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] });
+        expect.unreachable('expected InvalidRequestError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(InvalidRequestError);
+        expect((error as InvalidRequestError).status_code).toBe(422);
+      }
+    });
+
     it('401 → AuthenticationError', async () => {
       mockFetch({}, { ok: false, status: 401 });
       const adapter = new OpenAIAdapter('bad', 'https://test.api');
@@ -344,11 +382,41 @@ describe('OpenAIAdapter', () => {
       expect(events.some((e) => e.type === 'text_start')).toBe(true);
       expect(events.filter((e) => e.type === 'content_delta')).toHaveLength(2);
       expect(events.some((e) => e.type === 'text_end')).toBe(true);
+      const textStart = events.find((e): e is Extract<StreamEvent, { type: 'text_start' }> => e.type === 'text_start');
+      expect(textStart?.text_id).toBe('text_0');
+      const deltas = events.filter((e): e is Extract<StreamEvent, { type: 'content_delta' }> => e.type === 'content_delta');
+      expect(deltas.every((event) => event.text_id === 'text_0')).toBe(true);
+      const textEnd = events.find((e): e is Extract<StreamEvent, { type: 'text_end' }> => e.type === 'text_end');
+      expect(textEnd?.text_id).toBe('text_0');
       const end = events.find((e) => e.type === 'stream_end');
       expect(end).toBeDefined();
       if (end?.type === 'stream_end') {
         expect(end.response?.usage.total_tokens).toBe(7);
       }
+    });
+
+    it('emits provider_event for unknown provider stream events', async () => {
+      sseResponse([
+        'event: response.created\ndata: {"type":"response.created","response":{"model":"gpt-4o"}}',
+        'event: response.heartbeat\ndata: {"type":"response.heartbeat","heartbeat":true}',
+        'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","model":"gpt-4o","usage":{"input_tokens":1,"output_tokens":1}}}',
+      ]);
+
+      const adapter = new OpenAIAdapter('key', 'https://test.api');
+      const events: StreamEvent[] = [];
+      for await (const event of adapter.stream({ messages: [{ role: 'user', content: 'Hi' }] })) {
+        events.push(event);
+      }
+
+      const providerEvent = events.find((event): event is Extract<StreamEvent, { type: 'provider_event' }> => event.type === 'provider_event');
+      expect(providerEvent).toEqual({
+        type: 'provider_event',
+        provider: 'openai',
+        provider_event: {
+          type: 'response.heartbeat',
+          data: { type: 'response.heartbeat', heartbeat: true },
+        },
+      });
     });
 
     it('emits thinking_start and thinking_end around reasoning deltas', async () => {

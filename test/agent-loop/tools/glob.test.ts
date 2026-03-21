@@ -31,6 +31,18 @@ describe('glob tool', () => {
     expect(result).not.toContain('style.css');
   });
 
+  it('supports path as base search directory', async () => {
+    const env = await setup();
+    await mkdir(path.join(env.workspaceRoot, 'src'), { recursive: true });
+    await mkdir(path.join(env.workspaceRoot, 'test'), { recursive: true });
+    await writeFile(path.join(env.workspaceRoot, 'src', 'main.ts'), '', 'utf8');
+    await writeFile(path.join(env.workspaceRoot, 'test', 'main.ts'), '', 'utf8');
+
+    const result = await globHandler({ pattern: '**/*.ts', path: 'src' }, env);
+    expect(result).toContain('src/main.ts');
+    expect(result).not.toContain('test/main.ts');
+  });
+
   it('returns no matches message', async () => {
     const env = await setup();
     const result = await globHandler({ pattern: '**/*.xyz' }, env);

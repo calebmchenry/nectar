@@ -1,12 +1,17 @@
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { normalizeAnswer, type Answer, type Question } from '../interviewer/types.js';
-import type { StoredQuestionResource } from './types.js';
+import type { StoredQuestionResource, StoredQuestionStatus } from './types.js';
 
 interface PendingResolution {
   resolve: (answer: Answer) => void;
   reject: (error: Error) => void;
   timeout?: ReturnType<typeof setTimeout>;
+}
+
+export interface QuestionStoreCloseOptions {
+  disposition?: Exclude<StoredQuestionStatus, 'pending' | 'answered'>;
+  reason?: string;
 }
 
 export class QuestionNotFoundError extends Error {
@@ -109,23 +114,42 @@ export class QuestionStore {
     return answered;
   }
 
-  async close(reason = 'Question store closed'): Promise<void> {
+  async close(input: string | QuestionStoreCloseOptions = 'Question store closed'): Promise<void> {
+    const normalized = normalizeCloseOptions(input);
+    const disposition = normalized.disposition ?? 'timed_out';
+    const reason = normalized.reason ?? 'Question store closed';
+    await this.disposePending(disposition, reason);
+  }
+
+  private async disposePending(
+    disposition: Exclude<StoredQuestionStatus, 'pending' | 'answered'>,
+    reason: string,
+  ): Promise<void> {
     for (const [questionId, pending] of this.pending) {
       if (pending.timeout) {
         clearTimeout(pending.timeout);
       }
       pending.reject(new Error(reason));
       this.pending.delete(questionId);
+    }
+
+    await this.initialize();
+    const entries = await readdir(this.questionsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) {
+        continue;
+      }
+      const questionId = entry.name.replace(/\.json$/, '');
       try {
         const record = await this.readQuestion(questionId);
-        if (record && record.status === 'pending') {
-          const now = new Date().toISOString();
-          await this.writeQuestion({
-            ...record,
-            status: 'timed_out',
-            updated_at: now,
-          });
+        if (!record || record.status !== 'pending') {
+          continue;
         }
+        await this.writeQuestion({
+          ...record,
+          status: disposition,
+          updated_at: new Date().toISOString(),
+        });
       } catch {
         // best-effort
       }
@@ -211,7 +235,13 @@ export class QuestionStore {
   private async readQuestion(questionId: string): Promise<StoredQuestionResource | null> {
     try {
       const raw = await readFile(this.questionPath(questionId), 'utf8');
-      return JSON.parse(raw) as StoredQuestionResource;
+      const parsed = JSON.parse(raw) as StoredQuestionResource & {
+        status?: unknown;
+      };
+      return {
+        ...parsed,
+        status: normalizeQuestionStatus(parsed),
+      };
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code === 'ENOENT') {
@@ -243,11 +273,12 @@ export class QuestionStore {
 export type StoredQuestion = StoredQuestionResource;
 
 function toQuestion(resource: StoredQuestionResource): Question {
+  const choices = Array.isArray(resource.choices) ? resource.choices : [];
   return {
     id: resource.question_id,
-    type: resource.choices.length > 0 ? 'MULTIPLE_CHOICE' : 'FREEFORM',
+    type: choices.length > 0 ? 'MULTIPLE_CHOICE' : 'FREEFORM',
     text: resource.text,
-    choices: resource.choices.map((choice) => ({
+    choices: choices.map((choice) => ({
       label: choice.label,
       accelerator: choice.accelerator,
       edge_target: choice.edge_target ?? '',
@@ -257,4 +288,33 @@ function toQuestion(resource: StoredQuestionResource): Question {
     node_id: resource.node_id,
     run_id: resource.run_id,
   };
+}
+
+function normalizeCloseOptions(input: string | QuestionStoreCloseOptions): Required<QuestionStoreCloseOptions> {
+  if (typeof input === 'string') {
+    return {
+      disposition: 'timed_out',
+      reason: input,
+    };
+  }
+
+  return {
+    disposition: input.disposition ?? 'timed_out',
+    reason: input.reason ?? 'Question store closed',
+  };
+}
+
+function normalizeQuestionStatus(
+  record: Pick<StoredQuestionResource, 'status' | 'answered_at' | 'answer'> & { status?: unknown },
+): StoredQuestionStatus {
+  if (record.status === 'pending' || record.status === 'answered' || record.status === 'timed_out' || record.status === 'interrupted') {
+    return record.status;
+  }
+
+  if (record.answered_at || record.answer) {
+    return 'answered';
+  }
+
+  // Backward-compatible fallback for historic/unknown records.
+  return 'pending';
 }

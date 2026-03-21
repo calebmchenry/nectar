@@ -64,24 +64,17 @@ export class FanInHandler implements NodeHandler {
     });
 
     const best = ranked[0]!;
-    if (best.status === 'failure') {
-      return {
-        status: 'failure',
-        context_updates: {
-          'parallel.fan_in.best_id': best.branchId,
-          'parallel.fan_in.best_outcome': best.status,
-          [`${nodeId}.rationale`]: `Selected '${best.branchId}' by heuristic status ranking (${best.status}).`,
-        },
-        error_message: 'All parallel branches failed.'
-      };
-    }
-
+    const rationale = `Selected '${best.branchId}' by heuristic status ranking (${best.status}).`;
     return {
       status: 'success',
+      notes: rationale,
       context_updates: {
         'parallel.fan_in.best_id': best.branchId,
         'parallel.fan_in.best_outcome': best.status,
-        [`${nodeId}.rationale`]: `Selected '${best.branchId}' by heuristic status ranking (${best.status}).`,
+        'parallel.fan_in.rationale': rationale,
+        [`${nodeId}.rationale`]: rationale,
+        'fan_in_selected_branch': best.branchId,
+        'fan_in_selected_status': best.status,
       }
     };
   }
@@ -186,18 +179,13 @@ export class FanInHandler implements NodeHandler {
         'parallel.fan_in.best_outcome': selected.status,
         'parallel.fan_in.rationale': rationale,
         [`${input.node.id}.rationale`]: rationale,
+        'fan_in_selected_branch': selected.branchId,
+        'fan_in_selected_status': selected.status,
       };
-
-      if (selected.status === 'failure') {
-        return {
-          status: 'failure',
-          context_updates: contextUpdates,
-          error_message: `Prompted fan-in selected failed branch '${selected.branchId}'.`,
-        };
-      }
 
       return {
         status: 'success',
+        notes: rationale,
         context_updates: contextUpdates,
       };
     } catch (error) {

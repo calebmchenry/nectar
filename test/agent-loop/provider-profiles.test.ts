@@ -20,40 +20,38 @@ describe('ProviderProfiles', () => {
     expect(prompt).toContain('read_file');
     expect(prompt).toContain('write_file');
     expect(prompt).toContain('/tmp/test');
-    // Uses catalog-resolved default instead of hardcoded ID
-    expect(profile.defaultModel).toBe('claude-sonnet-4-20250514');
+    expect(profile.defaultModel).toBe('claude-sonnet-4-6-20260115');
   });
 
   it('OpenAIProfile generates system prompt', () => {
     const profile = new OpenAIProfile();
     const prompt = profile.systemPrompt(baseContext);
     expect(prompt).toContain('function call');
-    // Uses catalog-resolved default (gpt-4.1) instead of stale gpt-4o
-    expect(profile.defaultModel).toBe('gpt-4.1');
+    expect(profile.defaultModel).toBe('gpt-5.2');
   });
 
   it('GeminiProfile generates system prompt', () => {
     const profile = new GeminiProfile();
     const prompt = profile.systemPrompt(baseContext);
     expect(prompt).toContain('function calling');
-    // Uses catalog-resolved default
-    expect(profile.defaultModel).toBe('gemini-2.5-flash');
+    expect(profile.defaultModel).toBe('gemini-3-flash');
   });
 
-  it('provider profiles use logical selectors, not stale concrete IDs', () => {
-    // Verify none of the profiles contain the old stale IDs directly
-    // by checking they match the catalog's resolved defaults
+  it('provider profiles use catalog defaults', () => {
     const anthropic = new AnthropicProfile();
     const openai = new OpenAIProfile();
     const gemini = new GeminiProfile();
 
-    // OpenAI was the stale one: it used 'gpt-4o', now should be 'gpt-4.1'
-    expect(openai.defaultModel).not.toBe('gpt-4o');
-    expect(openai.defaultModel).toBe('gpt-4.1');
+    expect(anthropic.defaultModel).toBe('claude-sonnet-4-6-20260115');
+    expect(openai.defaultModel).toBe('gpt-5.2');
+    expect(gemini.defaultModel).toBe('gemini-3-flash');
+  });
 
-    // These should match catalog defaults
-    expect(anthropic.defaultModel).toBeTruthy();
-    expect(gemini.defaultModel).toBeTruthy();
+  it('exposes profile capability fields (C4, C5)', () => {
+    const profile = new OpenAIProfile();
+    expect(profile.context_window_size).toBeGreaterThan(0);
+    expect(typeof profile.supports_reasoning).toBe('boolean');
+    expect(typeof profile.supports_streaming).toBe('boolean');
   });
 
   it('includes project instructions in system prompt', () => {

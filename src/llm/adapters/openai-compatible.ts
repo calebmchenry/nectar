@@ -1,4 +1,4 @@
-import type { ProviderAdapter } from './types.js';
+import type { ProviderAdapter, ToolChoiceMode } from './types.js';
 import { parseSSEStream } from '../streaming.js';
 import type { StreamEvent } from '../streaming.js';
 import {
@@ -15,6 +15,7 @@ import type {
   Usage,
 } from '../types.js';
 import {
+  ContextLengthError,
   AccessDeniedError,
   AbortError,
   AuthenticationError,
@@ -24,6 +25,7 @@ import {
   OverloadedError,
   QuotaExceededError,
   RateLimitError,
+  RequestTimeoutError,
   ServerError,
   StreamError,
   TimeoutError,
@@ -339,6 +341,7 @@ function translateUsage(raw: Record<string, unknown> | undefined): Usage {
     output_tokens: outputTokens,
     total_tokens: inputTokens + outputTokens,
     reasoning_tokens: numberOrUndefined(completionDetails?.reasoning_tokens),
+    raw,
   };
 }
 
@@ -379,8 +382,15 @@ function getReasoningDelta(delta: Record<string, unknown>): string {
 
 async function classifyHttpError(provider: string, response: Response): Promise<never> {
   const body = await safeReadText(response);
+  const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
 
   switch (response.status) {
+    case 408:
+      throw new RequestTimeoutError(provider, `Request timeout: ${body}`);
+    case 413:
+      throw new ContextLengthError(provider, `Context length exceeded: ${body}`);
+    case 422:
+      throw new InvalidRequestError(provider, `Invalid request: ${body}`, undefined, 422);
     case 401:
       throw new AuthenticationError(provider, `Authentication failed: ${body}`);
     case 403:
@@ -391,18 +401,26 @@ async function classifyHttpError(provider: string, response: Response): Promise<
       if (isInsufficientQuota(body)) {
         throw new QuotaExceededError(provider, { status_code: 429, message: `Quota exceeded: ${body}` });
       }
-      const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
       throw new RateLimitError(provider, { retry_after_ms: retryAfter, message: `Rate limited: ${body}` });
     }
     case 503:
-      throw new OverloadedError(provider, `Server error ${response.status}: ${body}`);
+      throw new OverloadedError(provider, {
+        message: `Server error ${response.status}: ${body}`,
+        retry_after_ms: retryAfter,
+      });
     case 500:
     case 502:
     case 504:
-      throw new ServerError(provider, { status_code: response.status, message: `Server error ${response.status}: ${body}` });
+      throw new ServerError(
+        provider,
+        { status_code: response.status, retry_after_ms: retryAfter, message: `Server error ${response.status}: ${body}` }
+      );
     default:
       if (response.status >= 500) {
-        throw new ServerError(provider, { status_code: response.status, message: `Server error ${response.status}: ${body}` });
+        throw new ServerError(
+          provider,
+          { status_code: response.status, retry_after_ms: retryAfter, message: `Server error ${response.status}: ${body}` }
+        );
       }
       throw new InvalidRequestError(provider, `HTTP ${response.status}: ${body}`);
   }
@@ -429,10 +447,24 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   readonly provider_name = PROVIDER;
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly supportedToolChoiceModes: Set<ToolChoiceMode>;
 
-  constructor(apiKey: string, baseUrl: string) {
+  constructor(apiKey: string, baseUrl: string, supportedToolChoiceModes: ToolChoiceMode[] = ['auto', 'none']) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.supportedToolChoiceModes = new Set(supportedToolChoiceModes);
+  }
+
+  async initialize(): Promise<void> {
+    // Stateless adapter; no initialization required.
+  }
+
+  async close(): Promise<void> {
+    // Stateless adapter; no cleanup required.
+  }
+
+  supports_tool_choice(mode: ToolChoiceMode): boolean {
+    return this.supportedToolChoiceModes.has(mode);
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
@@ -514,6 +546,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           id: String(toolCall.id ?? ''),
           name: String(fn?.name ?? ''),
           arguments: String(fn?.arguments ?? '{}'),
+          tool_type: 'function',
         });
       }
     }
@@ -573,6 +606,8 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     let text = '';
     let sawDone = false;
     let thinkingActive = false;
+    let textActive = false;
+    const textId = 'text_0';
     const toolCalls = new Map<number, ToolCallState>();
 
     try {
@@ -629,12 +664,20 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
               thinkingActive = false;
               yield { type: 'thinking_end' };
             }
+            if (!textActive) {
+              textActive = true;
+              yield { type: 'text_start', text_id: textId };
+            }
             text += deltaContent;
-            yield { type: 'content_delta', text: deltaContent };
+            yield { type: 'content_delta', text: deltaContent, text_id: textId };
           }
 
           const deltaToolCalls = delta.tool_calls as Array<Record<string, unknown>> | undefined;
           if (deltaToolCalls) {
+            if (textActive) {
+              textActive = false;
+              yield { type: 'text_end', text_id: textId };
+            }
             for (const toolCall of deltaToolCalls) {
               const index = typeof toolCall.index === 'number' ? toolCall.index : 0;
               const existing = toolCalls.get(index) ?? {
@@ -678,6 +721,17 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         if (parsed.usage && typeof parsed.usage === 'object') {
           usage = translateUsage(parsed.usage as Record<string, unknown>);
         }
+
+        if (!choice && typeof chunk.event === 'string' && chunk.event.length > 0) {
+          yield {
+            type: 'provider_event',
+            provider: PROVIDER,
+            provider_event: {
+              type: chunk.event,
+              data: parsed,
+            },
+          };
+        }
       }
 
       if (!started) {
@@ -696,6 +750,10 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         thinkingActive = false;
         yield { type: 'thinking_end' };
       }
+      if (textActive) {
+        textActive = false;
+        yield { type: 'text_end', text_id: textId };
+      }
 
       const contentParts: ContentPart[] = [];
       if (text.length > 0) {
@@ -709,6 +767,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           id: toolCall.id,
           name: toolCall.name,
           arguments: toolCall.arguments,
+          tool_type: 'function',
         });
       }
 

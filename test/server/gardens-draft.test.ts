@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,6 +17,7 @@ async function workspace(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'nectar-garden-draft-'));
   tempDirs.push(dir);
   await mkdir(path.join(dir, 'gardens'), { recursive: true });
+  await mkdir(path.join(dir, '.nectar'), { recursive: true });
   return dir;
 }
 
@@ -43,6 +44,25 @@ function parseSseEventNames(payload: string): string[] {
     .split('\n')
     .filter((line) => line.startsWith('event:'))
     .map((line) => line.slice('event:'.length).trim());
+}
+
+function parseSseFirstEventData<T>(payload: string, eventName: string): T | null {
+  const lines = payload.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index]?.trim() !== `event: ${eventName}`) {
+      continue;
+    }
+    const dataLine = lines[index + 1]?.trim();
+    if (!dataLine || !dataLine.startsWith('data: ')) {
+      continue;
+    }
+    try {
+      return JSON.parse(dataLine.slice('data: '.length)) as T;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 describe('garden draft endpoint', () => {
@@ -101,5 +121,44 @@ describe('garden draft endpoint', () => {
     const payload = (await response.json()) as { code?: string; error?: string };
     expect(payload.code).toBe('VALIDATION_ERROR');
     expect(payload.error).toMatch(/prompt is required/i);
+  });
+
+  it('uses .nectar/config.yaml draft defaults when request omits provider/model', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
+
+    const ws = await workspace();
+    await writeFile(
+      path.join(ws, '.nectar', 'config.yaml'),
+      [
+        'draft:',
+        '  provider: simulation',
+        '  model: simulation-custom',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const server = await boot(ws);
+    if (!server) {
+      return;
+    }
+
+    const response = await fetch(`${server.base_url}/gardens/draft`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-hive-tab-id': 'test-config-tab',
+      },
+      body: JSON.stringify({
+        prompt: 'Create a release workflow.',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const payload = await response.text();
+    const draftStart = parseSseFirstEventData<{ provider: string; model?: string }>(payload, 'draft_start');
+    expect(draftStart?.provider).toBe('simulation');
+    expect(draftStart?.model).toBe('simulation-custom');
   });
 });

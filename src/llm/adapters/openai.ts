@@ -1,4 +1,4 @@
-import type { ProviderAdapter } from './types.js';
+import type { ProviderAdapter, ToolChoiceMode } from './types.js';
 import {
   GenerateResponse,
   normalizeContent,
@@ -18,6 +18,7 @@ import {
   AbortError,
   AccessDeniedError,
   AuthenticationError,
+  ContextLengthError,
   ContextWindowError,
   InvalidRequestError,
   LLMError,
@@ -26,6 +27,7 @@ import {
   OverloadedError,
   QuotaExceededError,
   RateLimitError,
+  RequestTimeoutError,
   ServerError,
   StreamError,
   TimeoutError,
@@ -42,7 +44,7 @@ import {
 
 const PROVIDER = 'openai';
 const DEFAULT_BASE_URL = 'https://api.openai.com';
-const DEFAULT_MODEL = 'gpt-4o';
+const DEFAULT_MODEL = 'gpt-5.2';
 
 function warnUnsupportedContentPart(partType: string): void {
   console.warn(`[llm:openai] skipping unsupported content part '${partType}'.`);
@@ -358,7 +360,8 @@ function translateOutputToContentParts(output: Array<Record<string, unknown>>): 
         type: 'tool_call',
         id: (item.call_id as string) ?? (item.id as string) ?? '',
         name: (item.name as string) ?? '',
-        arguments: (item.arguments as string) ?? '{}'
+        arguments: (item.arguments as string) ?? '{}',
+        tool_type: 'function',
       });
     }
   }
@@ -369,8 +372,15 @@ function translateOutputToContentParts(output: Array<Record<string, unknown>>): 
 async function classifyError(response: Response): Promise<never> {
   const body = await response.text().catch(() => '');
   const metadata = parseProviderErrorMetadata(body);
+  const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
 
   switch (response.status) {
+    case 408:
+      throw withErrorMetadata(new RequestTimeoutError(PROVIDER, `OpenAI request timeout: ${body}`), metadata);
+    case 413:
+      throw withErrorMetadata(new ContextLengthError(PROVIDER, `OpenAI context length exceeded: ${body}`), metadata);
+    case 422:
+      throw withErrorMetadata(new InvalidRequestError(PROVIDER, `OpenAI invalid request: ${body}`, undefined, 422), metadata);
     case 401:
       throw withErrorMetadata(new AuthenticationError(PROVIDER, `OpenAI authentication failed: ${body}`), metadata);
     case 403:
@@ -384,14 +394,16 @@ async function classifyError(response: Response): Promise<never> {
           metadata,
         );
       }
-      const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
       throw withErrorMetadata(
         new RateLimitError(PROVIDER, { retry_after_ms: retryAfter, message: `OpenAI rate limit: ${body}` }),
         metadata,
       );
     }
     case 503:
-      throw withErrorMetadata(new OverloadedError(PROVIDER, `OpenAI overloaded: ${body}`), metadata);
+      throw withErrorMetadata(
+        new OverloadedError(PROVIDER, { message: `OpenAI overloaded: ${body}`, retry_after_ms: retryAfter }),
+        metadata,
+      );
     case 400:
       if (isContextWindowError(body)) {
         throw withErrorMetadata(new ContextWindowError(PROVIDER, `OpenAI context window exceeded: ${body}`), metadata);
@@ -401,7 +413,10 @@ async function classifyError(response: Response): Promise<never> {
     case 502:
     case 504:
       throw withErrorMetadata(
-        new ServerError(PROVIDER, { status_code: response.status, message: `OpenAI HTTP ${response.status}: ${body}` }),
+        new ServerError(
+          PROVIDER,
+          { status_code: response.status, retry_after_ms: retryAfter, message: `OpenAI HTTP ${response.status}: ${body}` }
+        ),
         metadata,
       );
     default:
@@ -417,6 +432,18 @@ export class OpenAIAdapter implements ProviderAdapter {
   constructor(apiKey: string, baseUrl?: string) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl ?? process.env['OPENAI_BASE_URL'] ?? DEFAULT_BASE_URL;
+  }
+
+  async initialize(): Promise<void> {
+    // Stateless adapter; no initialization required.
+  }
+
+  async close(): Promise<void> {
+    // Stateless adapter; no cleanup required.
+  }
+
+  supports_tool_choice(_mode: ToolChoiceMode): boolean {
+    return true;
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
@@ -467,7 +494,8 @@ export class OpenAIAdapter implements ProviderAdapter {
       output_tokens: (usageData?.output_tokens as number) ?? 0,
       total_tokens: ((usageData?.input_tokens as number) ?? 0) + ((usageData?.output_tokens as number) ?? 0),
       reasoning_tokens: outputTokenDetails?.reasoning_tokens,
-      cache_read_tokens: inputTokenDetails?.cached_tokens
+      cache_read_tokens: inputTokenDetails?.cached_tokens,
+      raw: usageData,
     };
 
     const hasToolCall = parts.some((p) => p.type === 'tool_call');
@@ -538,6 +566,7 @@ export class OpenAIAdapter implements ProviderAdapter {
     let sawCompleted = false;
     let thinkingActive = false;
     let textActive = false;
+    const textId = 'text_0';
 
     try {
       for await (const sse of parseSSEStream(response, {
@@ -573,7 +602,7 @@ export class OpenAIAdapter implements ProviderAdapter {
             if (item?.type === 'function_call') {
               if (textActive) {
                 textActive = false;
-                yield { type: 'text_end' };
+                yield { type: 'text_end', text_id: textId };
               }
               currentFunctionCallId = (item.call_id as string) ?? (item.id as string) ?? '';
               currentFunctionName = (item.name as string) ?? '';
@@ -607,11 +636,11 @@ export class OpenAIAdapter implements ProviderAdapter {
               }
               if (!textActive) {
                 textActive = true;
-                yield { type: 'text_start' };
+                yield { type: 'text_start', text_id: textId };
               }
               partialText += text;
               parts.push({ type: 'text', text });
-              yield { type: 'content_delta', text };
+              yield { type: 'content_delta', text, text_id: textId };
             }
             break;
           }
@@ -628,7 +657,8 @@ export class OpenAIAdapter implements ProviderAdapter {
               type: 'tool_call',
               id: currentFunctionCallId,
               name: currentFunctionName,
-              arguments: currentFunctionArgs
+              arguments: currentFunctionArgs,
+              tool_type: 'function',
             });
             yield {
               type: 'tool_call_end',
@@ -662,7 +692,7 @@ export class OpenAIAdapter implements ProviderAdapter {
             }
             if (textActive) {
               textActive = false;
-              yield { type: 'text_end' };
+              yield { type: 'text_end', text_id: textId };
             }
             const resp = parsed.response as Record<string, unknown> | undefined;
             let status = 'completed';
@@ -681,7 +711,8 @@ export class OpenAIAdapter implements ProviderAdapter {
                   output_tokens: (u.output_tokens as number) ?? 0,
                   total_tokens: ((u.input_tokens as number) ?? 0) + ((u.output_tokens as number) ?? 0),
                   reasoning_tokens: outputDetails?.reasoning_tokens,
-                  cache_read_tokens: inputDetails?.cached_tokens
+                  cache_read_tokens: inputDetails?.cached_tokens,
+                  raw: u,
                 };
               }
 
@@ -705,6 +736,19 @@ export class OpenAIAdapter implements ProviderAdapter {
               message: responsePayload.message,
               response: responsePayload,
             };
+            break;
+          }
+          default: {
+            if (typeof eventType === 'string' && eventType.length > 0) {
+              yield {
+                type: 'provider_event',
+                provider: PROVIDER,
+                provider_event: {
+                  type: eventType,
+                  data: parsed,
+                },
+              };
+            }
             break;
           }
         }

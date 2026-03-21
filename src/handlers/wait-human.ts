@@ -5,6 +5,33 @@ import { Answer, Choice, Interviewer, Question, QuestionType, parseAccelerator }
 import { NodeHandler } from './registry.js';
 
 const YES_NO_LABELS = new Set(['yes', 'no', 'y', 'n']);
+const CONFIRMATION_AFFIRMATIVE_LABELS = new Set([
+  'yes',
+  'y',
+  'approve',
+  'approved',
+  'confirm',
+  'confirmed',
+  'accept',
+  'accepted',
+  'proceed',
+  'continue',
+  'ok',
+]);
+const CONFIRMATION_DECLINE_LABELS = new Set([
+  'no',
+  'n',
+  'decline',
+  'declined',
+  'reject',
+  'rejected',
+  'cancel',
+  'aborted',
+  'abort',
+  'deny',
+  'denied',
+  'stop',
+]);
 
 export class WaitHumanHandler implements NodeHandler {
   private readonly interviewer: Interviewer;
@@ -84,7 +111,7 @@ export class WaitHumanHandler implements NodeHandler {
     const question: Question = {
       id: questionId,
       type: questionType,
-      text: input.node.label ?? input.node.id,
+      text: renderQuestionText(input.node.label ?? input.node.id, questionType),
       choices,
       default_choice: defaultChoice,
       timeout_ms: input.node.timeoutMs,
@@ -174,6 +201,18 @@ function detectQuestionType(choices: Choice[]): QuestionType {
     if (labels.every((l) => YES_NO_LABELS.has(l))) {
       return 'YES_NO';
     }
+    const hasAffirmative = labels.some((label) => CONFIRMATION_AFFIRMATIVE_LABELS.has(label));
+    const hasDecline = labels.some((label) => CONFIRMATION_DECLINE_LABELS.has(label));
+    if (hasAffirmative && hasDecline) {
+      return 'CONFIRMATION';
+    }
   }
   return 'MULTIPLE_CHOICE';
+}
+
+function renderQuestionText(baseText: string, questionType: QuestionType): string {
+  if (questionType !== 'CONFIRMATION') {
+    return baseText;
+  }
+  return `${baseText}\n\nChoose an affirmative option to proceed, or a decline option to stop.`;
 }

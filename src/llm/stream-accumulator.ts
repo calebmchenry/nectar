@@ -107,6 +107,8 @@ export class StreamAccumulator {
         }
         this.activeThinking = '';
         break;
+      case 'provider_event':
+        break;
       case 'usage':
         this.usage = cloneUsage(event.usage);
         break;
@@ -167,6 +169,7 @@ export class StreamAccumulator {
         id: toolCall.id,
         name: toolCall.name,
         arguments: toolCall.arguments,
+        tool_type: 'function',
       });
     }
 

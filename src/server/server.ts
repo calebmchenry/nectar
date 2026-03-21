@@ -1,6 +1,8 @@
 import { once } from 'node:events';
 import http from 'node:http';
 import path from 'node:path';
+import { WorkspaceConfigLoader } from '../config/workspace.js';
+import { UnifiedClient } from '../llm/client.js';
 import { PipelineService } from '../runtime/pipeline-service.js';
 import { SwarmAnalysisService } from '../runtime/swarm-analysis-service.js';
 import { GraphRenderer } from './graph-renderer.js';
@@ -11,8 +13,12 @@ import { WorkspaceEventBus } from './workspace-event-bus.js';
 import { registerPipelineRoutes } from './routes/pipelines.js';
 import { registerGardenRoutes } from './routes/gardens.js';
 import { registerSeedRoutes } from './routes/seeds.js';
+import { registerWorkspaceRoutes } from './routes/workspace.js';
 import { registerWorkspaceEventRoutes } from './routes/events.js';
 import { tryServeHiveAsset } from './static-assets.js';
+import { closeAllSseStreams } from './sse.js';
+
+const SERVER_CLOSE_TIMEOUT_MS = 5_000;
 
 export interface StartServerOptions {
   host?: string;
@@ -37,6 +43,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Nec
   const host = options.host ?? '127.0.0.1';
   const requestedPort = options.port ?? 4140;
   const workspaceRoot = path.resolve(options.workspace_root ?? process.cwd());
+  const workspaceConfigLoader = new WorkspaceConfigLoader(workspaceRoot);
+  const llmClient = UnifiedClient.from_env();
 
   const pipelineService = new PipelineService(workspaceRoot);
   const runManager = new RunManager({
@@ -49,6 +57,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Nec
   const workspaceEventBus = new WorkspaceEventBus();
   const swarmAnalysisService = new SwarmAnalysisService({
     workspace_root: workspaceRoot,
+    client: llmClient,
     event_bus: workspaceEventBus,
   });
   const swarmManager = new SwarmManager({
@@ -67,6 +76,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Nec
   registerGardenRoutes(router, {
     workspace_root: workspaceRoot,
     run_manager: runManager,
+    config_loader: workspaceConfigLoader,
+    client: llmClient,
   });
   registerSeedRoutes(router, {
     workspace_root: workspaceRoot,
@@ -77,6 +88,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Nec
   registerWorkspaceEventRoutes(router, {
     workspace_root: workspaceRoot,
     event_bus: workspaceEventBus,
+  });
+  registerWorkspaceRoutes(router, {
+    config_loader: workspaceConfigLoader,
+    client: llmClient,
   });
   router.register('GET', '/health', (ctx) => {
     ctx.sendJson(200, { ok: true });
@@ -118,6 +133,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Nec
       return shutdownPromise;
     }
     closing = true;
+    closeAllSseStreams();
 
     const closePromise = new Promise<void>((resolve, reject) => {
       server.close((error) => {
@@ -128,15 +144,31 @@ export async function startServer(options: StartServerOptions = {}): Promise<Nec
         resolve();
       });
     });
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    const closeWithTimeout = new Promise<void>((resolve, reject) => {
+      closeTimer = setTimeout(() => {
+        reject(new Error(`Server close timed out after ${SERVER_CLOSE_TIMEOUT_MS}ms.`));
+      }, SERVER_CLOSE_TIMEOUT_MS);
+      closeTimer.unref?.();
+      void closePromise.then(resolve, reject);
+    });
 
     try {
-      await closePromise;
-    } catch {
-      // If server is already closed we can still continue shutdown.
+      await closeWithTimeout;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== 'ERR_SERVER_NOT_RUNNING') {
+        throw error;
+      }
+    } finally {
+      if (closeTimer) {
+        clearTimeout(closeTimer);
+      }
     }
 
     await runManager.shutdown();
     await swarmManager.shutdown();
+    await llmClient.close();
     shutdownResolve?.();
     return shutdownPromise;
   };

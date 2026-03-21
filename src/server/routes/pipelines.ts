@@ -77,9 +77,17 @@ export function registerPipelineRoutes(router: Router, options: PipelineRoutesOp
       }
       sendEnvelope(envelope);
     });
-    stream.onClose(() => {
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) {
+        return;
+      }
+      cleanedUp = true;
       unsubscribe?.();
-    });
+      ctx.res.off('close', cleanup);
+    };
+    ctx.res.on('close', cleanup);
+    stream.onClose(cleanup);
 
     const replayCeiling = journal.currentSeq();
     await journal.replay({

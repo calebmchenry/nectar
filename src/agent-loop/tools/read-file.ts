@@ -2,16 +2,17 @@ import type { ToolHandler } from '../tool-registry.js';
 
 export const readFileSchema = {
   properties: {
-    path: { type: 'string', description: 'File path relative to workspace root' },
+    file_path: { type: 'string', description: 'File path relative to workspace root' },
+    path: { type: 'string', description: 'Deprecated alias for file_path' },
     offset: { type: 'integer', minimum: 1, description: 'Line number to start reading from' },
     limit: { type: 'integer', minimum: 1, description: 'Number of lines to read' },
   },
-  required: ['path'],
+  anyOf: [{ required: ['file_path'] }, { required: ['path'] }],
   additionalProperties: false,
 };
 
 export const readFileHandler: ToolHandler = async (args, env) => {
-  const filePath = args.path as string;
+  const filePath = (args.file_path ?? args.path) as string;
   const offset = args.offset as number | undefined;
   const limit = args.limit as number | undefined;
 

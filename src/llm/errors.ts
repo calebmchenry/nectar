@@ -2,6 +2,7 @@ export class LLMError extends Error {
   readonly provider: string;
   readonly retryable: boolean;
   readonly status_code?: number;
+  readonly retry_after_ms?: number;
   error_code?: string;
   raw?: Record<string, unknown>;
 
@@ -11,6 +12,7 @@ export class LLMError extends Error {
       provider: string;
       retryable: boolean;
       status_code?: number;
+      retry_after_ms?: number;
       cause?: unknown;
       error_code?: string;
       raw?: Record<string, unknown>;
@@ -21,6 +23,7 @@ export class LLMError extends Error {
     this.provider = opts.provider;
     this.retryable = opts.retryable;
     this.status_code = opts.status_code;
+    this.retry_after_ms = opts.retry_after_ms;
     this.error_code = opts.error_code;
     this.raw = opts.raw;
   }
@@ -63,27 +66,29 @@ export class NotFoundError extends LLMError {
 }
 
 export class RateLimitError extends LLMError {
-  readonly retry_after_ms?: number;
-
   constructor(provider: string, opts?: { retry_after_ms?: number; message?: string; cause?: unknown }) {
     super(opts?.message ?? `Rate limited by provider '${provider}'`, {
       provider,
       retryable: true,
       status_code: 429,
+      retry_after_ms: opts?.retry_after_ms,
       cause: opts?.cause
     });
     this.name = 'RateLimitError';
-    this.retry_after_ms = opts?.retry_after_ms;
   }
 }
 
 export class ServerError extends LLMError {
-  constructor(provider: string, opts?: { status_code?: number; message?: string; cause?: unknown }) {
+  constructor(
+    provider: string,
+    opts?: { status_code?: number; retry_after_ms?: number; message?: string; cause?: unknown }
+  ) {
     const statusCode = opts?.status_code ?? 500;
     super(opts?.message ?? `Provider '${provider}' server error (${statusCode})`, {
       provider,
       retryable: true,
       status_code: statusCode,
+      retry_after_ms: opts?.retry_after_ms,
       cause: opts?.cause,
     });
     this.name = 'ServerError';
@@ -114,7 +119,7 @@ export class StreamError extends LLMError {
   ) {
     super(opts?.message ?? `Stream failed for provider '${provider}'`, {
       provider,
-      retryable: false,
+      retryable: true,
       cause: opts?.cause
     });
     this.name = 'StreamError';
@@ -124,11 +129,19 @@ export class StreamError extends LLMError {
 }
 
 export class OverloadedError extends ServerError {
-  constructor(provider: string, message?: string, cause?: unknown) {
+  constructor(
+    provider: string,
+    messageOrOpts?: string | { message?: string; retry_after_ms?: number; cause?: unknown },
+    cause?: unknown
+  ) {
+    const message = typeof messageOrOpts === 'string' ? messageOrOpts : messageOrOpts?.message;
+    const retryAfter = typeof messageOrOpts === 'string' ? undefined : messageOrOpts?.retry_after_ms;
+    const causeValue = typeof messageOrOpts === 'string' ? cause : messageOrOpts?.cause;
     super(provider, {
       status_code: 503,
       message: message ?? `Provider '${provider}' is overloaded`,
-      cause,
+      retry_after_ms: retryAfter,
+      cause: causeValue,
     });
     this.name = 'OverloadedError';
   }
@@ -170,11 +183,11 @@ export class UnsupportedToolChoiceError extends LLMError {
 }
 
 export class InvalidRequestError extends LLMError {
-  constructor(provider: string, message?: string, cause?: unknown) {
+  constructor(provider: string, message?: string, cause?: unknown, status_code = 400) {
     super(message ?? `Invalid request to provider '${provider}'`, {
       provider,
       retryable: false,
-      status_code: 400,
+      status_code,
       cause
     });
     this.name = 'InvalidRequestError';
@@ -182,14 +195,21 @@ export class InvalidRequestError extends LLMError {
 }
 
 export class ContextWindowError extends LLMError {
-  constructor(provider: string, message?: string, cause?: unknown) {
+  constructor(provider: string, message?: string, cause?: unknown, status_code = 400) {
     super(message ?? `Context window exceeded for provider '${provider}'`, {
       provider,
       retryable: false,
-      status_code: 400,
+      status_code,
       cause
     });
     this.name = 'ContextWindowError';
+  }
+}
+
+export class ContextLengthError extends ContextWindowError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(provider, message ?? `Context length exceeded for provider '${provider}'`, cause, 413);
+    this.name = 'ContextLengthError';
   }
 }
 
@@ -217,13 +237,21 @@ export class NetworkError extends LLMError {
 }
 
 export class TimeoutError extends LLMError {
-  constructor(provider: string, message?: string, cause?: unknown) {
+  constructor(provider: string, message?: string, cause?: unknown, status_code = 408) {
     super(message ?? `Request to provider '${provider}' timed out`, {
       provider,
-      retryable: true,
+      retryable: false,
+      status_code,
       cause
     });
     this.name = 'TimeoutError';
+  }
+}
+
+export class RequestTimeoutError extends TimeoutError {
+  constructor(provider: string, message?: string, cause?: unknown) {
+    super(provider, message ?? `Request timed out for provider '${provider}'`, cause, 408);
+    this.name = 'RequestTimeoutError';
   }
 }
 

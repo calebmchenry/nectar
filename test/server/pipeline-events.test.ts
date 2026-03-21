@@ -83,6 +83,35 @@ async function waitForTerminal(baseUrl: string, runId: string): Promise<void> {
 }
 
 describe('pipeline failure events', () => {
+  it('rejects structurally invalid pipelines at create-time with VALIDATION_ERROR', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
+
+    const ws = await workspace();
+    const server = await boot(ws);
+    if (!server) {
+      return;
+    }
+
+    const invalidDot = `digraph Invalid {
+      start [shape=Mdiamond]
+      bad [shape=parallelogram, tool_command="exit 42"]
+      start -> bad
+    }`;
+
+    const createResponse = await fetch(`${server.base_url}/pipelines`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dot_source: invalidDot }),
+    });
+
+    expect(createResponse.status).toBe(400);
+    const payload = (await createResponse.json()) as { code?: string; details?: { diagnostics?: Array<{ code?: string }> } };
+    expect(payload.code).toBe('VALIDATION_ERROR');
+    expect(payload.details?.diagnostics?.some((diagnostic) => diagnostic.code === 'EXIT_NODE_COUNT')).toBe(true);
+  });
+
   it('emits stage_failed and pipeline_failed while preserving run_error/node_completed', async () => {
     if (!(await canListenOnLoopback())) {
       return;
@@ -96,10 +125,10 @@ describe('pipeline failure events', () => {
 
     const failingDot = `digraph Failing {
       start [shape=Mdiamond]
-      bad [shape=parallelogram, script="exit 42"]
+      bad [shape=parallelogram, tool_command="exit 42"]
       done [shape=Msquare]
       start -> bad
-      bad -> done [label="failure"]
+      bad -> done
     }`;
 
     const createResponse = await fetch(`${server.base_url}/pipelines`, {
@@ -124,11 +153,11 @@ describe('pipeline failure events', () => {
     expect(eventNames).toContain('run_error');
 
     const stageFailedIndex = eventNames.indexOf('stage_failed');
-    const pipelineFailedIndex = eventNames.indexOf('pipeline_failed');
     const runErrorIndex = eventNames.indexOf('run_error');
+    const pipelineFailedIndex = eventNames.indexOf('pipeline_failed');
     expect(stageFailedIndex).toBeGreaterThan(-1);
-    expect(stageFailedIndex).toBeLessThan(pipelineFailedIndex);
-    expect(pipelineFailedIndex).toBeLessThan(runErrorIndex);
+    expect(stageFailedIndex).toBeLessThan(runErrorIndex);
+    expect(runErrorIndex).toBeLessThan(pipelineFailedIndex);
 
     const pipelineFailedEvents = parseEventData<{
       failed_node_id: string;

@@ -93,7 +93,7 @@ export interface AgentTurnLimitReachedEvent {
   max_turns: number;
 }
 
-export type AgentWarningCode = 'context_window_pressure' | 'tool_output_truncated';
+export type AgentWarningCode = 'context_window_pressure' | 'tool_output_truncated' | 'tool_call_repaired';
 
 export interface AgentWarningEvent {
   type: 'agent_warning';

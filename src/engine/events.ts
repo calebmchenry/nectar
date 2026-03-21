@@ -245,6 +245,7 @@ export interface AgentToolCompletedRunEvent {
   duration_ms: number;
   is_error: boolean;
   content_preview?: string;
+  full_content?: string;
   truncated?: boolean;
   artifact_path?: string;
 }
@@ -300,7 +301,7 @@ export interface AgentWarningRunEvent {
   run_id: string;
   node_id: string;
   session_id: string;
-  code: 'context_window_pressure' | 'tool_output_truncated';
+  code: 'context_window_pressure' | 'tool_output_truncated' | 'tool_call_repaired';
   message: string;
 }
 
@@ -458,5 +459,75 @@ export type RunEvent =
   | ChildSteerEvent
   | RunRestartedEvent
   | ToolHookBlockedEvent;
+
+export const ENGINE_EVENT_NAME_ALIASES = {
+  run_started: 'RunStarted',
+  node_started: 'NodeStarted',
+  node_completed: 'NodeCompleted',
+  stage_failed: 'StageFailed',
+  node_retrying: 'NodeRetrying',
+  edge_selected: 'EdgeSelected',
+  run_completed: 'RunCompleted',
+  run_interrupted: 'RunInterrupted',
+  pipeline_failed: 'PipelineFailed',
+  run_error: 'RunError',
+  human_question: 'HumanQuestion',
+  human_answer: 'HumanAnswer',
+  interview_started: 'InterviewStarted',
+  interview_completed: 'InterviewCompleted',
+  interview_timeout: 'InterviewTimeout',
+  interview_inform: 'InterviewInform',
+  parallel_started: 'ParallelStarted',
+  parallel_branch_started: 'ParallelBranchStarted',
+  parallel_branch_completed: 'ParallelBranchCompleted',
+  parallel_completed: 'ParallelCompleted',
+  checkpoint_saved: 'CheckpointSaved',
+  auto_status_applied: 'AutoStatusApplied',
+  agent_session_started: 'AgentSessionStarted',
+  agent_user_input: 'AgentUserInput',
+  agent_steering_injected: 'AgentSteeringInjected',
+  agent_assistant_text_start: 'AgentAssistantTextStart',
+  agent_assistant_text_end: 'AgentAssistantTextEnd',
+  agent_tool_called: 'AgentToolCalled',
+  agent_tool_call_output_delta: 'AgentToolCallOutputDelta',
+  agent_tool_completed: 'AgentToolCompleted',
+  agent_loop_detected: 'AgentLoopDetected',
+  agent_processing_ended: 'AgentProcessingEnded',
+  agent_session_ended: 'AgentSessionEnded',
+  agent_turn_limit_reached: 'AgentTurnLimitReached',
+  agent_warning: 'AgentWarning',
+  agent_error: 'AgentError',
+  agent_session_completed: 'AgentSessionCompleted',
+  context_window_warning: 'ContextWindowWarning',
+  subagent_spawned: 'SubagentSpawned',
+  subagent_completed: 'SubagentCompleted',
+  subagent_message: 'SubagentMessage',
+  child_run_started: 'ChildRunStarted',
+  child_snapshot_observed: 'ChildSnapshotObserved',
+  child_steer_note_written: 'ChildSteerNoteWritten',
+  run_restarted: 'RunRestarted',
+  tool_hook_blocked: 'ToolHookBlocked',
+} as const;
+
+export type SnakeCaseRunEventName = keyof typeof ENGINE_EVENT_NAME_ALIASES;
+export type PascalCaseRunEventName = (typeof ENGINE_EVENT_NAME_ALIASES)[SnakeCaseRunEventName];
+
+export const ENGINE_EVENT_NAME_ALIASES_REVERSE = Object.fromEntries(
+  Object.entries(ENGINE_EVENT_NAME_ALIASES).map(([snake, pascal]) => [pascal, snake]),
+) as Record<PascalCaseRunEventName, SnakeCaseRunEventName>;
+
+export function toPascalCaseEventName(name: SnakeCaseRunEventName): PascalCaseRunEventName {
+  return ENGINE_EVENT_NAME_ALIASES[name];
+}
+
+export function toSnakeCaseEventName(name: string): SnakeCaseRunEventName | undefined {
+  if (name in ENGINE_EVENT_NAME_ALIASES) {
+    return name as SnakeCaseRunEventName;
+  }
+  if (name in ENGINE_EVENT_NAME_ALIASES_REVERSE) {
+    return ENGINE_EVENT_NAME_ALIASES_REVERSE[name as PascalCaseRunEventName];
+  }
+  return undefined;
+}
 
 export type RunEventListener = (event: RunEvent) => void;

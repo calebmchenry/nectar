@@ -6,6 +6,7 @@ export const spawnAgentSchema = {
     model: { type: 'string', description: 'Optional model override for the child session' },
     working_dir: { type: 'string', description: 'Working directory for the child (default: parent\'s cwd)' },
     max_tool_rounds: { type: 'integer', description: 'Max tool rounds for the child (default: 20)' },
+    max_turns: { type: 'integer', description: 'Max turns for the child (0 = unlimited, default: child_max_turns)' },
     timeout_ms: { type: 'integer', description: 'Timeout in ms for the child session (default: 300000 / 5 min)' },
   },
   required: ['task'],

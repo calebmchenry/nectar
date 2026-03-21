@@ -15,6 +15,7 @@ export type ErrorCategory =
 
 export interface NodeOutcome {
   status: NodeStatus;
+  notes?: string;
   preferred_label?: string;
   suggested_next?: string[];
   context_updates?: Record<string, string>;

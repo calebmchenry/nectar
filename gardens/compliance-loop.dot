@@ -60,19 +60,19 @@ digraph ComplianceLoop {
     fan_out_critiques [shape=component, label="Fan Out Critiques", join_policy="wait_all"]
     fan_in_critiques  [shape=tripleoctagon, label="Fan In Critiques"]
 
-    claude_critique [
+    codex_critique [
         shape=parallelogram,
         label="GPT-5.4 Critique",
         timeout="900s",
         reasoning_effort="high",
-        script="codex exec --model gpt-5.4 'Read docs/sprints/drafts/NEXT-CODEX-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CLAUDE-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
+        script="codex exec --model gpt-5.4 'Read docs/sprints/drafts/NEXT-CODEX-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CODEX-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
     ]
 
-    codex_critique [
+    claude_critique [
         shape=parallelogram,
         label="Opus Critique",
         timeout="900s",
-        script="claude --dangerously-skip-permissions --model claude-opus-4-6 -p 'Read docs/sprints/drafts/NEXT-CLAUDE-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CODEX-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
+        script="claude --dangerously-skip-permissions --model claude-opus-4-6 -p 'Read docs/sprints/drafts/NEXT-CLAUDE-DRAFT.md and docs/sprints/drafts/NEXT-GEMINI-DRAFT.md. Write a critique to docs/sprints/drafts/NEXT-CLAUDE-CRITIQUE.md. For each draft identify: strengths, weaknesses, gaps in risk analysis, missing edge cases, Definition of Done completeness. End with recommendations for the final merged sprint.'"
     ]
 
     gemini_critique [

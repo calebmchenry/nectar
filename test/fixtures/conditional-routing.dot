@@ -2,12 +2,15 @@ digraph ConditionalRoutingFixture {
   start [shape=Mdiamond]
   score [shape=parallelogram, tool_command="printf 85"]
   review [shape=parallelogram, tool_command="printf approved-by-review"]
-  release [shape=Msquare]
-  fix [shape=Msquare]
+  release [shape=parallelogram, tool_command="printf releasing"]
+  fix [shape=parallelogram, tool_command="printf needs-fix"]
+  done [shape=Msquare]
 
   start -> score
   score -> review [condition="steps.score.output > 80"]
   score -> fix [label="fallback"]
   review -> release [condition="steps.review.output CONTAINS approved"]
   review -> fix [condition="NOT (steps.review.output CONTAINS approved)"]
+  release -> done
+  fix -> done
 }

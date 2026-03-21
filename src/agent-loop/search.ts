@@ -15,6 +15,11 @@ export interface GrepSearchOptions {
   maxResults?: number;
 }
 
+export interface GlobSearchOptions {
+  path?: string;
+  maxResults?: number;
+}
+
 export interface GrepMatch {
   relative_path: string;
   line: number;
@@ -24,14 +29,20 @@ export interface GrepMatch {
 export async function runGlobSearch(
   env: SearchEnvironment,
   pattern: string,
-  maxResults = 200,
+  optionsOrMaxResults: number | GlobSearchOptions = 200,
 ): Promise<string[]> {
-  const limit = Math.max(0, maxResults);
+  const options = typeof optionsOrMaxResults === 'number'
+    ? { maxResults: optionsOrMaxResults }
+    : optionsOrMaxResults;
+  const limit = Math.max(0, options.maxResults ?? 200);
   const rootDir = env.workspaceRoot;
+  const startDir = options.path
+    ? await env.resolvePath(options.path)
+    : rootDir;
   const ig = await loadGitignore(rootDir);
   const results: string[] = [];
 
-  for await (const relativePath of walkRelativeFiles(rootDir, rootDir, ig)) {
+  for await (const relativePath of walkRelativeFiles(startDir, rootDir, ig)) {
     if (matchesGlobPath(relativePath, pattern)) {
       results.push(relativePath);
     }

@@ -1,5 +1,6 @@
 import AjvModule from 'ajv';
 import type { ToolDefinition } from '../llm/tools.js';
+import { validateToolName } from '../llm/tool-repair.js';
 import type { ExecutionEnvironment } from './execution-environment.js';
 import type { ToolCallEnvelope, ToolResultEnvelope } from './types.js';
 import { TOOL_LINE_CAPS, truncateToolOutput } from './truncation.js';
@@ -31,6 +32,10 @@ export class ToolRegistry {
     schema: Record<string, unknown>,
     handler: ToolHandler
   ): void {
+    const validation = validateToolName(name);
+    if (!validation.valid) {
+      throw new Error(validation.error ?? `Invalid tool name '${name}'.`);
+    }
     this.tools.set(name, { name, description, schema, handler });
   }
 
@@ -70,12 +75,24 @@ export class ToolRegistry {
       line_limits?: Record<string, number>;
     }
   ): Promise<ToolResultEnvelope> {
-    const tool = this.tools.get(call.name);
-    if (!tool) {
+    const nameValidation = validateToolName(call.name);
+    if (!nameValidation.valid) {
       return {
         call_id: call.call_id,
-        content: `Unknown tool: '${call.name}'. Available tools: ${[...this.tools.keys()].join(', ')}`,
+        content: nameValidation.error ?? `Invalid tool name '${call.name}'.`,
         is_error: true,
+      };
+    }
+
+    const tool = this.tools.get(call.name);
+    if (!tool) {
+      const message = `Unknown tool: '${call.name}'. Available tools: ${[...this.tools.keys()].join(', ')}`;
+      return {
+        call_id: call.call_id,
+        content: message,
+        is_error: true,
+        full_content: message,
+        truncated: false,
       };
     }
 
@@ -87,10 +104,13 @@ export class ToolRegistry {
 
     if (!validate(call.arguments)) {
       const errors = validate.errors?.map((e: { instancePath?: string; message?: string }) => `${e.instancePath || '/'}: ${e.message}`).join('; ');
+      const message = `Invalid arguments for tool '${call.name}': ${errors}`;
       return {
         call_id: call.call_id,
-        content: `Invalid arguments for tool '${call.name}': ${errors}`,
+        content: message,
         is_error: true,
+        full_content: message,
+        truncated: false,
       };
     }
 
@@ -111,7 +131,8 @@ export class ToolRegistry {
         call_id: call.call_id,
         content: preview,
         is_error: false,
-        full_content: truncated ? result : undefined,
+        full_content: result,
+        truncated,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -119,6 +140,8 @@ export class ToolRegistry {
         call_id: call.call_id,
         content: message,
         is_error: true,
+        full_content: message,
+        truncated: false,
       };
     }
   }
@@ -129,6 +152,21 @@ export class ToolRegistry {
 
   unregister(name: string): boolean {
     return this.tools.delete(name);
+  }
+
+  definition(name: string): ToolDefinition | undefined {
+    const tool = this.tools.get(name);
+    if (!tool) {
+      return undefined;
+    }
+    return {
+      name: tool.name,
+      description: tool.description,
+      input_schema: {
+        type: 'object',
+        ...tool.schema,
+      },
+    };
   }
 
   /**

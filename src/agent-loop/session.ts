@@ -9,6 +9,7 @@ import { buildEnvironmentContext, buildGitSnapshot } from './environment-context
 import type { ExecutionEnvironment } from './execution-environment.js';
 import type { SessionConfig, SessionResult, SessionState, WorkItem, ToolCallEnvelope, ToolResultEnvelope, SubagentConfig, SubAgentHandle, SubAgentResult } from './types.js';
 import { DEFAULT_SESSION_CONFIG, DEFAULT_SUBAGENT_CONFIG } from './types.js';
+import { canContinueWithLimit, isLimitReached } from './types.js';
 import type { AgentEventListener } from './events.js';
 import { LoopDetector } from './loop-detection.js';
 import type { TranscriptWriter } from './transcript.js';
@@ -16,7 +17,8 @@ import { SubagentManager } from './subagent-manager.js';
 import { ToolHookRunner, resolveHooks } from './tool-hooks.js';
 import type { ResolvedHooks, ToolHookMetadata, PostHookMetadata } from './tool-hooks.js';
 import { getModelInfo } from '../llm/catalog.js';
-import { AccessDeniedError, AuthenticationError } from '../llm/errors.js';
+import { AccessDeniedError, AuthenticationError, ContextLengthError } from '../llm/errors.js';
+import { repairToolCall } from '../llm/tool-repair.js';
 import { discoverInstructions } from './project-instructions.js';
 
 export interface SessionOverrides {
@@ -65,6 +67,8 @@ export class AgentSession {
   private loopSteeringCount = 0;
   private sessionEndedEmitted = false;
   private sessionStartedEmitted = false;
+  private lifetimeTurnCount = 0;
+  private turnLimitExhausted = false;
 
   // Cached git snapshot (computed once per session)
   private cachedGitSnapshot: string | null | undefined = undefined;
@@ -161,6 +165,9 @@ export class AgentSession {
       }
       return Promise.reject(new Error('Cannot submit to a CLOSED session'));
     }
+    if (this.isSessionTurnLimitExhausted()) {
+      return Promise.reject(new Error(`Session turn limit (${this.config.max_turns}) has been exhausted.`));
+    }
     if (this.state === 'PROCESSING') {
       return Promise.reject(new Error('Cannot submit while session is PROCESSING. Use steer() or followUp() instead.'));
     }
@@ -191,6 +198,9 @@ export class AgentSession {
   followUp(prompt: string, options?: { provider_options?: ProviderOptions }): Promise<SessionResult> {
     if (this.state === 'CLOSED') {
       return Promise.reject(new Error('Cannot follow up on a CLOSED session'));
+    }
+    if (this.isSessionTurnLimitExhausted()) {
+      return Promise.reject(new Error(`Session turn limit (${this.config.max_turns}) has been exhausted.`));
     }
 
     if (this.followUpCount >= this.maxFollowUps) {
@@ -462,11 +472,12 @@ export class AgentSession {
     // Add user message to persistent conversation
     this.conversation.push({ role: 'user', content: item.prompt });
 
-    while (turnCount < this.config.max_turns) {
+    while (canContinueWithLimit(this.lifetimeTurnCount, this.config.max_turns)) {
       if (this.aborted) {
         return this.buildResult('aborted', lastText, aggregatedUsage, turnCount, toolCallCount, lastStopReason, 'Session aborted', startTime);
       }
 
+      this.lifetimeTurnCount++;
       turnCount++;
       this.onEvent?.({ type: 'agent_turn_started', turn_number: turnCount });
 
@@ -600,6 +611,19 @@ export class AgentSession {
           return this.buildResult('aborted', lastText, aggregatedUsage, turnCount, toolCallCount, 'aborted', 'Session aborted', startTime);
         }
         const errMsg = err instanceof Error ? err.message : String(err);
+        if (err instanceof ContextLengthError) {
+          this.emitContextLengthRecoveryWarning(errMsg, streamModel);
+          return this.buildResult(
+            'failure',
+            lastText,
+            aggregatedUsage,
+            turnCount,
+            toolCallCount,
+            'context_length_exceeded',
+            errMsg,
+            startTime,
+          );
+        }
         if (err instanceof AuthenticationError || err instanceof AccessDeniedError) {
           this.state = 'CLOSED';
           this.emitSessionEnded('closed');
@@ -667,7 +691,7 @@ export class AgentSession {
       // Execute tool calls (parallel or sequential based on profile)
       const hasToolStopReason = stopReason === 'tool_use' || stopReason === 'tool_calls';
       if (hasToolStopReason || toolCalls.length > 0) {
-        if (toolRoundCount >= this.config.max_tool_rounds_per_input) {
+        if (isLimitReached(toolRoundCount, this.config.max_tool_rounds_per_input)) {
           this.onEvent?.({
             type: 'agent_error',
             session_id: this.sessionId,
@@ -679,22 +703,68 @@ export class AgentSession {
 
         const toolResults: ContentPart[] = [];
         const roundToolCalls: ToolCallEnvelope[] = [];
+        const repairedArgsByIndex = new Map<number, Record<string, unknown>>();
+        const resultByIndex = new Map<number, ToolResultEnvelope>();
+        const executionEnvelopes: ToolCallEnvelope[] = [];
+        const executionIndexes: number[] = [];
 
-        // Build envelopes for all tool calls
-        const envelopes: ToolCallEnvelope[] = [];
-        for (const tc of toolCalls) {
-          let parsedArgs: Record<string, unknown>;
-          try {
-            parsedArgs = JSON.parse(tc.arguments || '{}');
-          } catch {
-            parsedArgs = {};
+        // Build envelopes for executable calls and synthesize deterministic errors for invalid calls.
+        for (let index = 0; index < toolCalls.length; index += 1) {
+          const tc = toolCalls[index]!;
+          const definition = this.registry.definition(tc.name);
+          if (!definition) {
+            this.onEvent?.({
+              type: 'agent_tool_call_started',
+              call_id: tc.id,
+              tool_name: tc.name,
+              arguments: {},
+            });
+            resultByIndex.set(index, {
+              call_id: tc.id,
+              content: `Unknown tool: '${tc.name}'.`,
+              is_error: true,
+            });
+            continue;
           }
+
+          const repaired = repairToolCall({
+            tool_name: tc.name,
+            raw_arguments: tc.arguments,
+            schema: definition.input_schema,
+          });
+
+          if (!repaired.ok) {
+            this.onEvent?.({
+              type: 'agent_tool_call_started',
+              call_id: tc.id,
+              tool_name: tc.name,
+              arguments: {},
+            });
+            resultByIndex.set(index, {
+              call_id: tc.id,
+              content: repaired.error.message,
+              is_error: true,
+            });
+            continue;
+          }
+
+          if (repaired.call.changed && repaired.call.warning) {
+            this.onEvent?.({
+              type: 'agent_warning',
+              session_id: this.sessionId,
+              code: 'tool_call_repaired',
+              message: repaired.call.warning,
+            });
+          }
+
           const envelope: ToolCallEnvelope = {
-            name: tc.name,
-            arguments: parsedArgs,
+            name: repaired.call.tool_name,
+            arguments: repaired.call.arguments,
             call_id: tc.id,
           };
-          envelopes.push(envelope);
+          repairedArgsByIndex.set(index, envelope.arguments);
+          executionEnvelopes.push(envelope);
+          executionIndexes.push(index);
           roundToolCalls.push(envelope);
         }
 
@@ -834,40 +904,58 @@ export class AgentSession {
         };
 
         // Use parallel execution if enabled and multiple calls
-        const useParallel = this.profile.parallel_tool_execution && envelopes.length > 1;
-        let results: ToolResultEnvelope[];
+        const useParallel = this.profile.parallel_tool_execution && executionEnvelopes.length > 1;
+        let executedResults: ToolResultEnvelope[] = [];
 
-        if (useParallel) {
-          results = await executeToolsBatch(
-            envelopes,
-            executeOne,
-            this.profile.max_parallel_tools,
-            this.aborted ? AbortSignal.abort() : undefined,
-          );
-        } else {
-          // Sequential fallback
-          results = [];
-          for (const envelope of envelopes) {
-            if (this.aborted) {
-              return this.buildResult('aborted', lastText, aggregatedUsage, turnCount, toolCallCount, 'aborted', 'Session aborted during tool execution', startTime);
+        if (executionEnvelopes.length > 0) {
+          if (useParallel) {
+            executedResults = await executeToolsBatch(
+              executionEnvelopes,
+              executeOne,
+              this.profile.max_parallel_tools,
+              this.aborted ? AbortSignal.abort() : undefined,
+            );
+          } else {
+            // Sequential fallback
+            for (const envelope of executionEnvelopes) {
+              if (this.aborted) {
+                return this.buildResult('aborted', lastText, aggregatedUsage, turnCount, toolCallCount, 'aborted', 'Session aborted during tool execution', startTime);
+              }
+              executedResults.push(await executeOne(envelope));
             }
-            results.push(await executeOne(envelope));
           }
         }
 
+        for (let i = 0; i < executedResults.length; i += 1) {
+          const index = executionIndexes[i]!;
+          resultByIndex.set(index, executedResults[i]!);
+        }
+
         // Assemble results in original call order
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i]!;
+        for (let i = 0; i < toolCalls.length; i += 1) {
           const tc = toolCalls[i]!;
+          const result = resultByIndex.get(i) ?? {
+            call_id: tc.id,
+            content: `Tool '${tc.name}' did not return a result.`,
+            is_error: true,
+            full_content: `Tool '${tc.name}' did not return a result.`,
+            truncated: false,
+          };
           toolCallCount++;
 
           // Write tool call artifacts and capture artifact path
-          const artifactPath = await this.transcriptWriter?.writeToolCall(toolCallCount, tc.name, envelopes[i]!.arguments, result.content, result.full_content);
+          const artifactPath = await this.transcriptWriter?.writeToolCall(
+            toolCallCount,
+            tc.name,
+            repairedArgsByIndex.get(i) ?? {},
+            result.content,
+            result.truncated ? result.full_content : undefined,
+          );
 
           // Emit tool completion event with artifact path
           const toolDuration = (result as ToolResultEnvelope & { _duration_ms?: number })._duration_ms ?? 0;
           this.emitToolOutputDeltas(tc.id, tc.name, result.content);
-          if (result.full_content !== undefined) {
+          if (result.truncated) {
             this.onEvent?.({
               type: 'agent_warning',
               session_id: this.sessionId,
@@ -882,8 +970,8 @@ export class AgentSession {
             duration_ms: toolDuration,
             is_error: result.is_error,
             content_preview: result.content.slice(0, 500),
-            full_content: result.full_content,
-            truncated: result.full_content !== undefined,
+            full_content: result.full_content ?? result.content,
+            truncated: result.truncated ?? false,
             artifact_path: artifactPath,
           });
 
@@ -944,7 +1032,20 @@ export class AgentSession {
       }
     }
 
-    // Turn limit exceeded
+    // Session-lifetime turn limit exceeded
+    this.markTurnLimitExceeded();
+    return this.buildResult('failure', lastText, aggregatedUsage, turnCount, toolCallCount, 'turn_limit_exceeded', `Turn limit (${this.config.max_turns}) exceeded`, startTime);
+  }
+
+  private isSessionTurnLimitExhausted(): boolean {
+    return this.turnLimitExhausted && this.config.max_turns > 0;
+  }
+
+  private markTurnLimitExceeded(): void {
+    if (this.turnLimitExhausted || this.config.max_turns <= 0) {
+      return;
+    }
+    this.turnLimitExhausted = true;
     this.onEvent?.({
       type: 'agent_turn_limit_reached',
       session_id: this.sessionId,
@@ -955,7 +1056,12 @@ export class AgentSession {
       session_id: this.sessionId,
       message: `Turn limit (${this.config.max_turns}) exceeded`,
     });
-    return this.buildResult('failure', lastText, aggregatedUsage, turnCount, toolCallCount, 'turn_limit_exceeded', `Turn limit (${this.config.max_turns}) exceeded`, startTime);
+
+    const queued = this.pendingInputs.splice(0);
+    const error = new Error(`Session turn limit (${this.config.max_turns}) has been exhausted.`);
+    for (const pending of queued) {
+      pending.reject(error);
+    }
   }
 
   private isSubagentTool(name: string): boolean {
@@ -1080,20 +1186,15 @@ export class AgentSession {
     }
 
     const toolDuration = Date.now() - toolStartTime;
-    this.onEvent?.({
-      type: 'agent_tool_call_completed',
-      call_id: envelope.call_id,
-      tool_name: envelope.name,
-      duration_ms: toolDuration,
-      is_error: isError,
-      content_preview: content.slice(0, 500),
-    });
-
-    return {
+    const result: ToolResultEnvelope & { _duration_ms?: number } = {
       call_id: envelope.call_id,
       content,
       is_error: isError,
+      full_content: content,
+      truncated: false,
     };
+    result._duration_ms = toolDuration;
+    return result;
   }
 
   private emitSessionStarted(): void {
@@ -1119,7 +1220,11 @@ export class AgentSession {
 
     if (this.cachedDiscoveredInstructions === undefined) {
       try {
-        this.cachedDiscoveredInstructions = await discoverInstructions(this.config.workspace_root, this.profile.name);
+        this.cachedDiscoveredInstructions = await discoverInstructions(
+          this.config.workspace_root,
+          this.profile.name,
+          this.env.cwd,
+        );
       } catch {
         this.cachedDiscoveredInstructions = '';
       }
@@ -1203,18 +1308,35 @@ export class AgentSession {
     };
   }
 
+  private emitContextLengthRecoveryWarning(message: string, streamModel: string): void {
+    const estimatedTokens = Math.ceil(this.estimateConversationChars() / 4);
+    const modelInfo = this.resolveModelInfo(streamModel);
+    const contextWindow = modelInfo?.context_window ?? 0;
+    const usagePct = contextWindow > 0
+      ? Number(((estimatedTokens / contextWindow) * 100).toFixed(2))
+      : 100;
+
+    this.onEvent?.({
+      type: 'agent_warning',
+      session_id: this.sessionId,
+      code: 'context_window_pressure',
+      message: `${message}. Session remains recoverable; submit a shorter follow-up to continue.`,
+    });
+    this.onEvent?.({
+      type: 'context_window_warning',
+      session_id: this.sessionId,
+      usage_pct: usagePct,
+      estimated_tokens: estimatedTokens,
+      context_window: contextWindow,
+    });
+  }
+
   private emitContextWindowWarningIfNeeded(streamModel: string): void {
     if (this.contextWindowWarningEmitted) {
       return;
     }
 
-    const provider = this.overrides.provider ?? this.profile.name;
-    const modelCandidates = [streamModel, this.overrides.model, this.profile.defaultModel].filter(
-      (value): value is string => typeof value === 'string' && value.length > 0
-    );
-    let modelInfo = modelCandidates
-      .map((candidate) => getModelInfo(candidate, provider) ?? getModelInfo(candidate))
-      .find((candidate) => candidate !== undefined);
+    const modelInfo = this.resolveModelInfo(streamModel);
     if (!modelInfo || modelInfo.context_window <= 0) {
       return;
     }
@@ -1240,6 +1362,16 @@ export class AgentSession {
       estimated_tokens: estimatedTokens,
       context_window: modelInfo.context_window,
     });
+  }
+
+  private resolveModelInfo(streamModel: string): ReturnType<typeof getModelInfo> {
+    const provider = this.overrides.provider ?? this.profile.name;
+    const modelCandidates = [streamModel, this.overrides.model, this.profile.defaultModel].filter(
+      (value): value is string => typeof value === 'string' && value.length > 0
+    );
+    return modelCandidates
+      .map((candidate) => getModelInfo(candidate, provider) ?? getModelInfo(candidate))
+      .find((candidate) => candidate !== undefined);
   }
 
   private estimateConversationChars(): number {

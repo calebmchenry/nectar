@@ -1,9 +1,12 @@
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { execFile as execFileCallback } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { discoverInstructions } from '../../src/agent-loop/project-instructions.js';
 
+const execFile = promisify(execFileCallback);
 const tempDirs: string[] = [];
 
 afterEach(async () => {
@@ -25,63 +28,88 @@ describe('discoverInstructions', () => {
     expect(result).toBe('');
   });
 
-  it('discovers AGENTS.md', async () => {
+  it('walks from repo root to cwd with deeper/provider-specific precedence', async () => {
     const dir = await setup();
-    await writeFile(path.join(dir, 'AGENTS.md'), 'Agent instructions here', 'utf8');
+    const apiDir = path.join(dir, 'packages', 'api');
+    await mkdir(apiDir, { recursive: true });
 
-    const result = await discoverInstructions(dir, 'anthropic');
-    expect(result).toContain('Agent instructions here');
+    await writeFile(path.join(dir, 'AGENTS.md'), 'root generic', 'utf8');
+    await writeFile(path.join(dir, 'CLAUDE.md'), 'root provider', 'utf8');
+    await writeFile(path.join(apiDir, 'AGENTS.md'), 'api generic', 'utf8');
+    await writeFile(path.join(apiDir, 'CLAUDE.md'), 'api provider', 'utf8');
+
+    await execFile('git', ['init'], { cwd: dir });
+
+    const result = await discoverInstructions(dir, 'anthropic', apiDir);
+    const rootGenericIdx = result.indexOf('root generic');
+    const rootProviderIdx = result.indexOf('root provider');
+    const apiGenericIdx = result.indexOf('api generic');
+    const apiProviderIdx = result.indexOf('api provider');
+
+    expect(rootGenericIdx).toBeGreaterThan(-1);
+    expect(rootProviderIdx).toBeGreaterThan(rootGenericIdx);
+    expect(apiGenericIdx).toBeGreaterThan(rootProviderIdx);
+    expect(apiProviderIdx).toBeGreaterThan(apiGenericIdx);
   });
 
-  it('discovers provider-specific CLAUDE.md for anthropic', async () => {
+  it('falls back to workspace_root when cwd is outside a git repo', async () => {
     const dir = await setup();
-    await writeFile(path.join(dir, 'CLAUDE.md'), 'Claude specific', 'utf8');
-    await writeFile(path.join(dir, 'AGENTS.md'), 'Generic', 'utf8');
+    const nestedDir = path.join(dir, 'packages', 'api');
+    await mkdir(nestedDir, { recursive: true });
 
-    const result = await discoverInstructions(dir, 'anthropic');
-    expect(result).toContain('Claude specific');
-    expect(result).toContain('Generic');
+    await writeFile(path.join(dir, 'AGENTS.md'), 'workspace generic', 'utf8');
+    await writeFile(path.join(nestedDir, 'CLAUDE.md'), 'nested provider', 'utf8');
+
+    const result = await discoverInstructions(dir, 'anthropic', nestedDir);
+    expect(result).toContain('workspace generic');
+    expect(result).toContain('nested provider');
+    expect(result.indexOf('workspace generic')).toBeLessThan(result.indexOf('nested provider'));
   });
 
-  it('discovers .codex/instructions.md for openai', async () => {
+  it('falls back to workspace_root when git is unavailable', async () => {
+    const dir = await setup();
+    const nestedDir = path.join(dir, 'pkg');
+    await mkdir(nestedDir, { recursive: true });
+
+    await writeFile(path.join(dir, 'AGENTS.md'), 'fallback root', 'utf8');
+    await writeFile(path.join(nestedDir, 'CLAUDE.md'), 'fallback nested', 'utf8');
+
+    const result = await discoverInstructions(
+      dir,
+      'anthropic',
+      nestedDir,
+      async () => {
+        throw new Error('git not installed');
+      },
+    );
+
+    expect(result).toContain('fallback root');
+    expect(result).toContain('fallback nested');
+    expect(result.indexOf('fallback root')).toBeLessThan(result.indexOf('fallback nested'));
+  });
+
+  it('preserves highest-precedence files when enforcing 32KB budget', async () => {
+    const dir = await setup();
+    const nestedDir = path.join(dir, 'nested');
+    await mkdir(path.join(nestedDir, '.codex'), { recursive: true });
+
+    await writeFile(path.join(dir, 'AGENTS.md'), 'x'.repeat(40_000), 'utf8');
+    await writeFile(path.join(nestedDir, '.codex', 'instructions.md'), 'openai nested winner', 'utf8');
+
+    const result = await discoverInstructions(dir, 'openai', nestedDir);
+    expect(result).toContain('openai nested winner');
+    expect(result).not.toContain(`--- ${path.join(dir, 'AGENTS.md')} ---`);
+  });
+
+  it('orders AGENTS.md before provider-specific file in the same directory', async () => {
     const dir = await setup();
     await mkdir(path.join(dir, '.codex'), { recursive: true });
-    await writeFile(path.join(dir, '.codex', 'instructions.md'), 'OpenAI specific', 'utf8');
+    await writeFile(path.join(dir, 'AGENTS.md'), 'generic instructions', 'utf8');
+    await writeFile(path.join(dir, '.codex', 'instructions.md'), 'provider instructions', 'utf8');
 
-    const result = await discoverInstructions(dir, 'openai');
-    expect(result).toContain('OpenAI specific');
-  });
-
-  it('discovers GEMINI.md for gemini', async () => {
-    const dir = await setup();
-    await writeFile(path.join(dir, 'GEMINI.md'), 'Gemini specific', 'utf8');
-
-    const result = await discoverInstructions(dir, 'gemini');
-    expect(result).toContain('Gemini specific');
-  });
-
-  it('provider-specific files are more specific than AGENTS.md', async () => {
-    const dir = await setup();
-    await writeFile(path.join(dir, 'CLAUDE.md'), 'Claude rules', 'utf8');
-    await writeFile(path.join(dir, 'AGENTS.md'), 'Generic rules', 'utf8');
-
-    const result = await discoverInstructions(dir, 'anthropic');
-    // Claude file should appear before AGENTS.md
-    const claudeIdx = result.indexOf('Claude rules');
-    const agentsIdx = result.indexOf('Generic rules');
-    expect(claudeIdx).toBeLessThan(agentsIdx);
-  });
-
-  it('truncates to fit 32KB budget', async () => {
-    const dir = await setup();
-    // Write a very large AGENTS.md
-    const largeContent = 'X'.repeat(40_000);
-    await writeFile(path.join(dir, 'AGENTS.md'), largeContent, 'utf8');
-    await writeFile(path.join(dir, 'CLAUDE.md'), 'Important Claude instructions', 'utf8');
-
-    const result = await discoverInstructions(dir, 'anthropic');
-    expect(result.length).toBeLessThanOrEqual(40_000); // Some buffer for markers
-    // Provider-specific should be preserved
-    expect(result).toContain('Important Claude instructions');
+    const result = await discoverInstructions(dir, 'openai', dir);
+    expect(result).toContain('generic instructions');
+    expect(result).toContain('provider instructions');
+    expect(result.indexOf('generic instructions')).toBeLessThan(result.indexOf('provider instructions'));
   });
 });

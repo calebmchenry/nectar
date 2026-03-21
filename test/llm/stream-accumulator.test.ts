@@ -57,6 +57,7 @@ describe('StreamAccumulator', () => {
       id: 'call_1',
       name: 'sum',
       arguments: '{"a":1,"b":2}',
+      tool_type: 'function',
     });
   });
 

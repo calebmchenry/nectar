@@ -77,11 +77,14 @@ describe('seed run linkage integration', () => {
       `digraph SeedLifecycle {
         start [shape=Mdiamond]
         approve [shape=hexagon, label="Continue?"]
+        continue_work [shape=parallelogram, tool_command="echo continue"]
+        stop_work [shape=parallelogram, tool_command="echo stop"]
         done [shape=Msquare]
-        stop [shape=Msquare]
         start -> approve
-        approve -> done [label="Yes"]
-        approve -> stop [label="No"]
+        approve -> continue_work [label="Yes"]
+        approve -> stop_work [label="No"]
+        continue_work -> done
+        stop_work -> done
       }`,
       'utf8'
     );
@@ -172,8 +175,84 @@ describe('seed run linkage integration', () => {
     expect(runEvents).toContain('run_interrupted');
     expect(runEvents).toContain('run_resumed');
     expect(runEvents).toContain('run_completed');
+    expect(runEvents.filter((type) => type === 'run_started')).toHaveLength(1);
+    expect(runEvents.filter((type) => type === 'run_interrupted')).toHaveLength(1);
+    expect(runEvents.filter((type) => type === 'run_resumed')).toHaveLength(1);
+    expect(runEvents.filter((type) => type === 'run_completed')).toHaveLength(1);
     expect(runEvents.indexOf('run_started')).toBeLessThan(runEvents.indexOf('run_interrupted'));
     expect(runEvents.indexOf('run_interrupted')).toBeLessThan(runEvents.indexOf('run_resumed'));
     expect(runEvents.indexOf('run_resumed')).toBeLessThan(runEvents.indexOf('run_completed'));
+  });
+
+  it('records run_failed exactly once for linked failing runs', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
+
+    const ws = await workspace();
+    await writeFile(
+      path.join(ws, 'gardens', 'seed-failure.dot'),
+      `digraph SeedFailure {
+        start [shape=Mdiamond]
+        fail_step [shape=parallelogram, tool_command="exit 42"]
+        done [shape=Msquare]
+        start -> fail_step
+        fail_step -> done
+      }`,
+      'utf8',
+    );
+
+    const server = await boot(ws);
+    if (!server) {
+      return;
+    }
+
+    const createSeedResponse = await fetch(`${server.base_url}/seeds`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Seed run failure linkage',
+        body: 'Validate run_failed linkage.',
+      }),
+    });
+    expect(createSeedResponse.status).toBe(201);
+    const created = (await createSeedResponse.json()) as { seed: { id: number } };
+    const seedId = created.seed.id;
+
+    const linkResponse = await fetch(`${server.base_url}/seeds/${seedId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ linked_gardens_add: ['gardens/seed-failure.dot'] }),
+    });
+    expect(linkResponse.status).toBe(200);
+
+    const runStartResponse = await fetch(`${server.base_url}/seeds/${seedId}/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(runStartResponse.status).toBe(202);
+    const started = (await runStartResponse.json()) as { run_id: string };
+
+    expect(await waitForStatus(server.base_url, started.run_id, new Set(['failed']))).toBe('failed');
+
+    const seedDirs = await readdir(path.join(ws, 'seedbed'));
+    expect(seedDirs).toHaveLength(1);
+    const seedDir = path.join(ws, 'seedbed', seedDirs[0]!);
+
+    const metaRaw = await readFile(path.join(seedDir, 'meta.yaml'), 'utf8');
+    const meta = parseYaml(metaRaw) as { linked_runs: string[] };
+    expect(meta.linked_runs).toEqual([started.run_id]);
+
+    const activityRaw = await readFile(path.join(seedDir, 'activity.jsonl'), 'utf8');
+    const events = activityRaw
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { type: string; run_id?: string });
+
+    const runEvents = events.filter((event) => event.run_id === started.run_id).map((event) => event.type);
+    expect(runEvents.filter((type) => type === 'run_started')).toHaveLength(1);
+    expect(runEvents.filter((type) => type === 'run_failed')).toHaveLength(1);
+    expect(runEvents.indexOf('run_started')).toBeLessThan(runEvents.indexOf('run_failed'));
   });
 });

@@ -77,11 +77,14 @@ describe('HTTP human gate flow', () => {
     const dotSource = `digraph G {
       start [shape=Mdiamond]
       approval [shape=hexagon, label="Choose deployment action"]
-      approve_exit [shape=Msquare]
-      reject_exit [shape=Msquare]
+      approve [shape=parallelogram, tool_command="echo approve"]
+      reject [shape=parallelogram, tool_command="echo reject"]
+      done [shape=Msquare]
       start -> approval
-      approval -> approve_exit [label="Approve"]
-      approval -> reject_exit [label="Reject"]
+      approval -> approve [label="Approve"]
+      approval -> reject [label="Reject"]
+      approve -> done
+      reject -> done
     }`;
 
     const createRes = await fetch(`${server.base_url}/pipelines`, {
@@ -112,6 +115,6 @@ describe('HTTP human gate flow', () => {
     const checkpoint = (await checkpointRes.json()) as {
       completed_nodes: Array<{ node_id: string }>;
     };
-    expect(checkpoint.completed_nodes.some((node) => node.node_id === 'reject_exit')).toBe(true);
+    expect(checkpoint.completed_nodes.some((node) => node.node_id === 'reject')).toBe(true);
   });
 });

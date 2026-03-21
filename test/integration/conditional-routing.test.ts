@@ -26,14 +26,17 @@ const ROUTING_SOURCE = `digraph G {
   score [shape=parallelogram, tool_command="printf 85"]
   review [shape=parallelogram, tool_command="printf artifact-ready"]
   gate [shape=diamond]
-  ok_exit [shape=Msquare]
-  fail_exit [shape=Msquare]
+  ok_path [shape=parallelogram, tool_command="printf route-ok"]
+  fail_path [shape=parallelogram, tool_command="printf route-fail"]
+  done [shape=Msquare]
 
   start -> score
   score -> review
   review -> gate
-  gate -> ok_exit [condition="steps.score.output > 80 && steps.review.output CONTAINS artifact && EXISTS artifacts.review.stdout"]
-  gate -> fail_exit [label="Fallback"]
+  gate -> ok_path [condition="steps.score.output > 80 && steps.review.output CONTAINS artifact && EXISTS artifacts.review.stdout"]
+  gate -> fail_path [label="Fallback"]
+  ok_path -> done
+  fail_path -> done
 }`;
 
 describe('integration conditional routing', () => {
@@ -50,8 +53,8 @@ describe('integration conditional routing', () => {
     const result = await engine.run();
     expect(result.status).toBe('completed');
     const completedIds = result.completed_nodes.map((node) => node.node_id);
-    expect(completedIds).toContain('ok_exit');
-    expect(completedIds).not.toContain('fail_exit');
+    expect(completedIds).toContain('ok_path');
+    expect(completedIds).not.toContain('fail_path');
   });
 
   it('resolves steps.* and artifacts.* correctly after resume', async () => {
@@ -134,7 +137,7 @@ describe('integration conditional routing', () => {
     const resumed = await resumeEngine.run();
     expect(resumed.status).toBe('completed');
     const completedIds = resumed.completed_nodes.map((node) => node.node_id);
-    expect(completedIds).toContain('ok_exit');
-    expect(completedIds).not.toContain('fail_exit');
+    expect(completedIds).toContain('ok_path');
+    expect(completedIds).not.toContain('fail_path');
   });
 });

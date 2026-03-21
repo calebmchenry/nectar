@@ -9,6 +9,7 @@ import { ToolRegistry } from '../../src/agent-loop/tool-registry.js';
 import { LocalExecutionEnvironment } from '../../src/agent-loop/execution-environment.js';
 import { AnthropicProfile } from '../../src/agent-loop/provider-profiles.js';
 import type { SessionConfig } from '../../src/agent-loop/types.js';
+import { DEFAULT_SESSION_CONFIG } from '../../src/agent-loop/types.js';
 import type { AgentEvent } from '../../src/agent-loop/events.js';
 import { ScriptedAdapter } from '../helpers/scripted-adapter.js';
 import { readFileHandler, readFileSchema, readFileDescription } from '../../src/agent-loop/tools/read-file.js';
@@ -17,6 +18,7 @@ import { editFileHandler, editFileSchema, editFileDescription } from '../../src/
 import { shellHandler, shellSchema, shellDescription } from '../../src/agent-loop/tools/shell.js';
 import type { ExecutionEnvironment } from '../../src/agent-loop/execution-environment.js';
 import type { StreamEvent } from '../../src/llm/streaming.js';
+import { ContextLengthError } from '../../src/llm/errors.js';
 
 const tempDirs: string[] = [];
 
@@ -123,6 +125,39 @@ describe('AgentSession', () => {
     expect(result.stop_reason).toBe('turn_limit_exceeded');
   });
 
+  it('counts max_turns across session lifetime and rejects subsequent inputs once exhausted', async () => {
+    const workspace = await createWorkspace();
+    await writeFile(path.join(workspace, 'test.txt'), 'content', 'utf8');
+    const events: AgentEvent[] = [];
+
+    const adapter = new ScriptedAdapter([
+      { tool_calls: [{ id: 'tc-1', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { text: 'first complete' },
+      { tool_calls: [{ id: 'tc-2', name: 'read_file', arguments: { path: 'test.txt' } }] },
+      { tool_calls: [{ id: 'tc-3', name: 'read_file', arguments: { path: 'test.txt' } }] },
+    ]);
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+
+    const session = new AgentSession(
+      client, makeRegistry(), new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace, { max_turns: 3 }),
+      { onEvent: (event) => events.push(event) },
+    );
+
+    const first = await session.submit('first');
+    expect(first.status).toBe('success');
+    expect(first.turn_count).toBe(2);
+
+    const second = await session.submit('second');
+    expect(second.status).toBe('failure');
+    expect(second.stop_reason).toBe('turn_limit_exceeded');
+    expect(second.turn_count).toBe(1);
+
+    await expect(session.submit('third')).rejects.toThrow(/turn limit/i);
+    expect(events.filter((event) => event.type === 'agent_turn_limit_reached')).toHaveLength(1);
+  });
+
   it('enforces max_tool_rounds_per_input limit', async () => {
     const workspace = await createWorkspace();
     await writeFile(path.join(workspace, 'test.txt'), 'content', 'utf8');
@@ -142,6 +177,40 @@ describe('AgentSession', () => {
     const result = await session.processInput('Do something');
     expect(result.status).toBe('failure');
     expect(result.stop_reason).toBe('tool_round_limit_exceeded');
+  });
+
+  it('default 0 limits allow sessions to exceed 12 turns and 10 tool rounds', async () => {
+    const workspace = await createWorkspace();
+    for (let i = 0; i < 13; i += 1) {
+      await writeFile(path.join(workspace, `file-${i}.txt`), `content ${i}`, 'utf8');
+    }
+
+    const adapter = new ScriptedAdapter([
+      ...Array.from({ length: 13 }, (_, i) => ({
+        tool_calls: [{ id: `tc-${i}`, name: 'read_file', arguments: { path: `file-${i}.txt` } }],
+      })),
+      { text: 'done' },
+    ]);
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+    const session = new AgentSession(
+      client,
+      makeRegistry(),
+      new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      {
+        max_turns: DEFAULT_SESSION_CONFIG.max_turns,
+        max_tool_rounds_per_input: DEFAULT_SESSION_CONFIG.max_tool_rounds_per_input,
+        default_command_timeout_ms: 120_000,
+        workspace_root: workspace,
+      },
+    );
+
+    const result = await session.processInput('keep reading files');
+    expect(DEFAULT_SESSION_CONFIG.max_turns).toBe(0);
+    expect(DEFAULT_SESSION_CONFIG.max_tool_rounds_per_input).toBe(0);
+    expect(result.status).toBe('success');
+    expect(result.turn_count).toBe(14);
+    expect(result.tool_call_count).toBe(13);
   });
 
   it('handles tool error and model recovery', async () => {
@@ -600,7 +669,65 @@ describe('AgentSession', () => {
     expect(completed?.type).toBe('agent_tool_call_completed');
     if (completed?.type === 'agent_tool_call_completed') {
       expect(completed.content_preview).toContain('lines omitted');
+      expect(completed.full_content).toBeDefined();
+      expect(completed.truncated).toBe(true);
     }
+  });
+
+  it('recovers from ContextLengthError and remains available for follow-up input', async () => {
+    const workspace = await createWorkspace();
+    const events: AgentEvent[] = [];
+    let streamCalls = 0;
+
+    const adapter: ProviderAdapter = {
+      provider_name: 'context-overflow-test',
+      async generate() {
+        return {
+          message: { role: 'assistant', content: 'unused' },
+          usage: { input_tokens: 1, output_tokens: 1 },
+          stop_reason: 'end_turn',
+          model: 'context-overflow-test',
+          provider: 'context-overflow-test',
+        };
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        streamCalls += 1;
+        if (streamCalls === 1) {
+          throw new ContextLengthError('context-overflow-test', 'context too long');
+        }
+        yield { type: 'stream_start', model: 'context-overflow-test' };
+        yield { type: 'content_delta', text: 'Recovered response' };
+        yield {
+          type: 'stream_end',
+          stop_reason: 'end_turn',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Recovered response' }] },
+        };
+      },
+      supports_tool_choice() {
+        return true;
+      },
+    };
+
+    const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+    const session = new AgentSession(
+      client,
+      makeRegistry(),
+      new AnthropicProfile(),
+      new LocalExecutionEnvironment(workspace),
+      makeConfig(workspace),
+      { onEvent: (event) => events.push(event) },
+    );
+
+    const first = await session.processInput('long input');
+    expect(first.status).toBe('failure');
+    expect(first.stop_reason).toBe('context_length_exceeded');
+    expect(session.getState()).toBe('AWAITING_INPUT');
+    expect(events.some((event) => event.type === 'agent_warning')).toBe(true);
+    expect(events.some((event) => event.type === 'context_window_warning')).toBe(true);
+
+    const second = await session.processInput('short input');
+    expect(second.status).toBe('success');
+    expect(second.final_text).toContain('Recovered response');
   });
 
   it('emits agent_turn_limit_reached and agent_error when max_turns is exhausted', async () => {

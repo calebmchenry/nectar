@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeContent, getTextContent, ContentKind } from '../../src/llm/types.js';
+import { normalizeContent, getTextContent, ContentKind, Message as MessageHelpers } from '../../src/llm/types.js';
 import type { ContentPart, Message, Usage, StopReason } from '../../src/llm/types.js';
 
 describe('normalizeContent', () => {
@@ -64,6 +64,20 @@ describe('Message', () => {
   it('supports all 5 roles', () => {
     const roles: Message['role'][] = ['system', 'user', 'assistant', 'tool', 'developer'];
     expect(roles).toHaveLength(5);
+  });
+
+  it('exposes tool_call_id for tool result messages (U4)', () => {
+    const msg = MessageHelpers.tool_result('call-123', 'ok');
+    expect(msg.tool_call_id).toBe('call-123');
+  });
+
+  it('exposes Message.text accessor concatenating only text parts (U5)', () => {
+    const msg = MessageHelpers.assistant([
+      { type: 'text', text: 'hello ' },
+      { type: 'tool_call', id: '1', name: 'fn', arguments: '{}' },
+      { type: 'text', text: 'world' },
+    ]);
+    expect(msg.text).toBe('hello world');
   });
 });
 

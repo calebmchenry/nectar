@@ -1,8 +1,30 @@
+export interface ContextLock {
+  acquireRead(): Promise<void> | void;
+  acquireWrite(): Promise<void> | void;
+  release(): Promise<void> | void;
+}
+
+export class NoOpContextLock implements ContextLock {
+  acquireRead(): void {
+    // Single-threaded JS execution + context clones provide current safety guarantees.
+  }
+
+  acquireWrite(): void {
+    // Single-threaded JS execution + context clones provide current safety guarantees.
+  }
+
+  release(): void {
+    // No lock state is tracked in the no-op implementation.
+  }
+}
+
 export class ExecutionContext {
   private readonly values = new Map<string, string>();
   private readonly run_log: string[] = [];
+  private readonly lock: ContextLock;
 
-  constructor(seed?: Record<string, string>) {
+  constructor(seed?: Record<string, string>, lock: ContextLock = new NoOpContextLock()) {
+    this.lock = lock;
     if (!seed) {
       return;
     }
@@ -26,7 +48,7 @@ export class ExecutionContext {
   }
 
   clone(): ExecutionContext {
-    const cloned = new ExecutionContext(this.snapshot());
+    const cloned = new ExecutionContext(this.snapshot(), this.lock);
     // Preserve run_log through serialization: stored in _run_log key
     for (const entry of this.run_log) {
       cloned.appendLog(entry);
@@ -68,5 +90,9 @@ export class ExecutionContext {
 
   getLog(): readonly string[] {
     return this.run_log;
+  }
+
+  getLock(): ContextLock {
+    return this.lock;
   }
 }

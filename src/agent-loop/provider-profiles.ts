@@ -1,5 +1,5 @@
 import { buildEnvironmentContext, buildGitSnapshot } from './environment-context.js';
-import { resolveModelSelector } from '../llm/catalog.js';
+import { getModelInfo, resolveModelSelector } from '../llm/catalog.js';
 import type { ExecutionEnvironment } from './execution-environment.js';
 
 export interface ProfileContext {
@@ -14,6 +14,9 @@ export interface ProviderProfile {
   systemPrompt(context: ProfileContext): string;
   providerOptions(): Record<string, unknown>;
   defaultModel?: string;
+  context_window_size: number;
+  supports_reasoning: boolean;
+  supports_streaming: boolean;
   parallel_tool_execution: boolean;
   max_parallel_tools: number;
   /** Tools this profile exposes to the model */
@@ -53,6 +56,9 @@ ${toolList}${instructionBlock}`;
 export class AnthropicProfile implements ProviderProfile {
   readonly name = 'anthropic';
   readonly defaultModel = resolveModelSelector('anthropic', 'default');
+  readonly context_window_size = readContextWindow(this.defaultModel, 'anthropic');
+  readonly supports_reasoning = readSupportsReasoning(this.defaultModel, 'anthropic');
+  readonly supports_streaming = readSupportsStreaming(this.defaultModel, 'anthropic');
   readonly parallel_tool_execution = true;
   readonly max_parallel_tools = 8;
   readonly visibleTools = ['read_file', 'write_file', 'edit_file', 'shell', 'grep', 'glob'];
@@ -75,6 +81,9 @@ export class AnthropicProfile implements ProviderProfile {
 export class OpenAIProfile implements ProviderProfile {
   readonly name = 'openai';
   readonly defaultModel = resolveModelSelector('openai', 'default');
+  readonly context_window_size = readContextWindow(this.defaultModel, 'openai');
+  readonly supports_reasoning = readSupportsReasoning(this.defaultModel, 'openai');
+  readonly supports_streaming = readSupportsStreaming(this.defaultModel, 'openai');
   readonly parallel_tool_execution = true;
   readonly max_parallel_tools = 8;
   readonly visibleTools = ['read_file', 'write_file', 'apply_patch', 'shell', 'grep', 'glob'];
@@ -92,6 +101,9 @@ export class OpenAIProfile implements ProviderProfile {
 export class GeminiProfile implements ProviderProfile {
   readonly name = 'gemini';
   readonly defaultModel = resolveModelSelector('gemini', 'default');
+  readonly context_window_size = readContextWindow(this.defaultModel, 'gemini');
+  readonly supports_reasoning = readSupportsReasoning(this.defaultModel, 'gemini');
+  readonly supports_streaming = readSupportsStreaming(this.defaultModel, 'gemini');
   readonly parallel_tool_execution = false;
   readonly max_parallel_tools = 8;
   readonly visibleTools = [
@@ -165,4 +177,25 @@ export async function buildFullSystemPrompt(
   if (gitBlock) parts.push(gitBlock);
 
   return parts.join('\n\n');
+}
+
+function readContextWindow(modelId: string | undefined, provider: string): number {
+  if (!modelId) {
+    return 0;
+  }
+  return getModelInfo(modelId, provider)?.context_window ?? 0;
+}
+
+function readSupportsReasoning(modelId: string | undefined, provider: string): boolean {
+  if (!modelId) {
+    return false;
+  }
+  return getModelInfo(modelId, provider)?.supports_reasoning ?? false;
+}
+
+function readSupportsStreaming(modelId: string | undefined, provider: string): boolean {
+  if (!modelId) {
+    return true;
+  }
+  return getModelInfo(modelId, provider)?.supports_streaming ?? true;
 }

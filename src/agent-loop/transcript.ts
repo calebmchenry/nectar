@@ -51,7 +51,7 @@ export class TranscriptWriter {
       error_message: result.error_message,
       completed_at: new Date().toISOString(),
     };
-    await writeFile(path.join(this.nodeDir, 'status.json'), JSON.stringify(status, null, 2), 'utf8');
+    await writeFile(path.join(this.nodeDir, 'agent-status.json'), JSON.stringify(status, null, 2), 'utf8');
   }
 
   async writeToolCall(

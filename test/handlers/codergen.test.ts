@@ -65,7 +65,7 @@ describe('CodergenHandler', () => {
       const response = await readFile(path.join(nodeDir, 'response.md'), 'utf8');
       expect(response).toContain('Simulated response');
 
-      const status = JSON.parse(await readFile(path.join(nodeDir, 'status.json'), 'utf8'));
+      const status = JSON.parse(await readFile(path.join(nodeDir, 'agent-status.json'), 'utf8'));
       expect(status.status).toBe('success');
       expect(status.model).toContain('simulated');
     });
@@ -162,7 +162,7 @@ describe('CodergenHandler', () => {
       const response = await readFile(path.join(nodeDir, 'response.md'), 'utf8');
       expect(response).toContain('Simulated response');
 
-      const status = JSON.parse(await readFile(path.join(nodeDir, 'status.json'), 'utf8'));
+      const status = JSON.parse(await readFile(path.join(nodeDir, 'agent-status.json'), 'utf8'));
       expect(status.status).toBe('success');
       expect(status.usage).toBeDefined();
     });

@@ -78,21 +78,26 @@ export class CodergenHandler implements NodeHandler {
     const reasoningEffort = (input.node.reasoningEffort ?? input.node.attributes.reasoning_effort?.trim()) as 'low' | 'medium' | 'high' | undefined;
 
     // Parse agent config from node attributes
-    const maxTurns = input.node.attributes['agent.max_turns']
-      ? parseInt(input.node.attributes['agent.max_turns'], 10)
-      : DEFAULT_SESSION_CONFIG.max_turns;
-    const maxToolRounds = input.node.attributes['agent.max_tool_rounds']
-      ? parseInt(input.node.attributes['agent.max_tool_rounds'], 10)
-      : DEFAULT_SESSION_CONFIG.max_tool_rounds_per_input;
-    const commandTimeoutMs = input.node.attributes['agent.command_timeout_ms']
-      ? parseInt(input.node.attributes['agent.command_timeout_ms'], 10)
-      : DEFAULT_SESSION_CONFIG.default_command_timeout_ms;
-    const maxCommandTimeoutMs = input.node.attributes['agent.max_command_timeout_ms']
-      ? parseInt(input.node.attributes['agent.max_command_timeout_ms'], 10)
-      : DEFAULT_SESSION_CONFIG.max_command_timeout_ms;
-    const loopDetectionWindow = input.node.attributes['agent.loop_detection_window']
-      ? parseInt(input.node.attributes['agent.loop_detection_window'], 10)
-      : DEFAULT_SESSION_CONFIG.loop_detection_window;
+    const maxTurns = parseNonNegativeInt(
+      input.node.attributes['agent.max_turns'],
+      DEFAULT_SESSION_CONFIG.max_turns,
+    );
+    const maxToolRounds = parseNonNegativeInt(
+      input.node.attributes['agent.max_tool_rounds'],
+      DEFAULT_SESSION_CONFIG.max_tool_rounds_per_input,
+    );
+    const commandTimeoutMs = parsePositiveInt(
+      input.node.attributes['agent.command_timeout_ms'],
+      DEFAULT_SESSION_CONFIG.default_command_timeout_ms,
+    );
+    const maxCommandTimeoutMs = parsePositiveInt(
+      input.node.attributes['agent.max_command_timeout_ms'],
+      DEFAULT_SESSION_CONFIG.max_command_timeout_ms ?? DEFAULT_SESSION_CONFIG.default_command_timeout_ms,
+    );
+    const loopDetectionWindow = parsePositiveInt(
+      input.node.attributes['agent.loop_detection_window'],
+      DEFAULT_SESSION_CONFIG.loop_detection_window ?? 10,
+    );
     const enableLoopDetection = input.node.attributes['agent.enable_loop_detection']
       ? input.node.attributes['agent.enable_loop_detection'] === 'true'
       : DEFAULT_SESSION_CONFIG.enable_loop_detection;
@@ -198,6 +203,7 @@ export class CodergenHandler implements NodeHandler {
       if (result.status === 'aborted') {
         return {
           status: 'failure',
+          notes: result.error_message ?? 'Agent session aborted.',
           error_message: result.error_message ?? 'Session aborted',
         };
       }
@@ -206,6 +212,7 @@ export class CodergenHandler implements NodeHandler {
         const inferredCategory = classifyCodergenError(result.error_message);
         return {
           status: inferredCategory ? 'failure' : 'retry',
+          notes: result.error_message ?? 'Agent session failed.',
           error_message: result.error_message ?? 'Agent session failed',
           error_category: inferredCategory,
         };
@@ -213,6 +220,7 @@ export class CodergenHandler implements NodeHandler {
 
       return {
         status: 'success',
+        notes: 'LLM response received.',
         context_updates: {
           last_stage: input.node.id,
           last_response: truncateForContext(result.final_text, 200),
@@ -222,9 +230,10 @@ export class CodergenHandler implements NodeHandler {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const status = { status: 'failure', error: errorMessage, node_id: input.node.id };
-      await writeFile(path.join(nodeDir, 'status.json'), JSON.stringify(status, null, 2), 'utf8');
+      await writeFile(path.join(nodeDir, 'agent-status.json'), JSON.stringify(status, null, 2), 'utf8');
       return {
         status: 'failure',
+        notes: errorMessage,
         error_message: `Codergen node '${input.node.id}' failed: ${errorMessage}`,
         error_category: classifyCodergenError(error),
       };
@@ -245,9 +254,10 @@ export class CodergenHandler implements NodeHandler {
 
       if (!response.content || response.content.trim().length === 0) {
         const status = { status: 'failure', error: 'Empty LLM response', node_id: input.node.id };
-        await writeFile(path.join(nodeDir, 'status.json'), JSON.stringify(status, null, 2), 'utf8');
+        await writeFile(path.join(nodeDir, 'agent-status.json'), JSON.stringify(status, null, 2), 'utf8');
         return {
           status: 'failure',
+          notes: 'Received an empty LLM response.',
           error_message: `Codergen node '${input.node.id}' received an empty LLM response.`
         };
       }
@@ -262,10 +272,11 @@ export class CodergenHandler implements NodeHandler {
         started_at: new Date().toISOString(),
         completed_at: new Date().toISOString()
       };
-      await writeFile(path.join(nodeDir, 'status.json'), JSON.stringify(status, null, 2), 'utf8');
+      await writeFile(path.join(nodeDir, 'agent-status.json'), JSON.stringify(status, null, 2), 'utf8');
 
       return {
         status: 'success',
+        notes: 'LLM response received.',
         context_updates: {
           last_stage: input.node.id,
           last_response: truncateForContext(response.content, 200),
@@ -275,9 +286,10 @@ export class CodergenHandler implements NodeHandler {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown LLM error';
       const status = { status: 'failure', error: errorMessage, node_id: input.node.id };
-      await writeFile(path.join(nodeDir, 'status.json'), JSON.stringify(status, null, 2), 'utf8');
+      await writeFile(path.join(nodeDir, 'agent-status.json'), JSON.stringify(status, null, 2), 'utf8');
       return {
         status: 'failure',
+        notes: errorMessage,
         error_message: `Codergen node '${input.node.id}' failed: ${errorMessage}`,
         error_category: classifyCodergenError(error),
       };
@@ -290,6 +302,28 @@ function truncateForContext(value: string, maxChars: number): string {
     return value;
   }
   return value.slice(0, maxChars);
+}
+
+function parseNonNegativeInt(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 function classifyCodergenError(error: unknown): NodeOutcome['error_category'] {
@@ -439,6 +473,7 @@ function bridgeAgentEvent(
         duration_ms: event.duration_ms,
         is_error: event.is_error,
         content_preview: event.content_preview,
+        full_content: event.full_content,
         truncated: event.truncated,
         artifact_path: event.artifact_path,
       });

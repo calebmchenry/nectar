@@ -31,10 +31,11 @@ import { OpenAICompatibleAdapter } from './adapters/openai-compatible.js';
 import { GeminiAdapter } from './adapters/gemini.js';
 import { SimulationProvider } from './simulation.js';
 import { createRetryMiddleware } from './retry.js';
-import { ConfigurationError, InvalidRequestError, StreamError, StructuredOutputError } from './errors.js';
+import { ConfigurationError, InvalidRequestError, StreamError, StructuredOutputError, UnsupportedToolChoiceError } from './errors.js';
 import { extractJsonText, validateAgainstSchema, buildValidationRetryMessages } from './structured.js';
 import { IncrementalJsonParser } from './incremental-json.js';
 import { isActiveTool, type ToolContext, type ToolDefinition } from './tools.js';
+import { repairToolCall, validateToolName } from './tool-repair.js';
 import { StreamAccumulator } from './stream-accumulator.js';
 
 const PROVIDER_PRIORITY = ['anthropic', 'openai', 'openai_compatible', 'gemini', 'simulation'] as const;
@@ -239,12 +240,25 @@ async function normalizeRequestImages(request: GenerateRequest): Promise<Generat
   };
 }
 
+function assertValidToolDefinitions(request: GenerateRequest): void {
+  for (const tool of request.tools ?? []) {
+    const validation = validateToolName(tool.name);
+    if (!validation.valid) {
+      throw new InvalidRequestError(
+        request.provider ?? 'unified',
+        validation.error ?? `Invalid tool name '${tool.name}'.`,
+      );
+    }
+  }
+}
+
 export class UnifiedClient implements LLMClient {
   private readonly providers: Map<string, ProviderAdapter>;
   private readonly defaultProvider: string;
   private readonly middlewares: Middleware[] = [];
   private composedGenerate: GenerateFn | null = null;
   private composedStream: StreamFn | null = null;
+  private readonly initializedProviders = new Set<string>();
 
   constructor(providers: Map<string, ProviderAdapter>) {
     this.providers = providers;
@@ -317,11 +331,29 @@ export class UnifiedClient implements LLMClient {
     return adapter;
   }
 
+  private async ensureProviderInitialized(adapter: ProviderAdapter): Promise<void> {
+    if (this.initializedProviders.has(adapter.provider_name)) {
+      return;
+    }
+    if (adapter.initialize) {
+      await adapter.initialize();
+    }
+    this.initializedProviders.add(adapter.provider_name);
+  }
+
   private getGenerateChain(): GenerateFn {
     if (!this.composedGenerate) {
       const terminal: GenerateFn = async (request) => {
         const normalized = await normalizeRequestImages(request);
+        assertValidToolDefinitions(normalized);
         const adapter = this.resolveProvider(normalized.provider);
+        if (normalized.tool_choice && !adapter.supports_tool_choice(normalized.tool_choice.type)) {
+          throw new UnsupportedToolChoiceError(
+            adapter.provider_name,
+            `Tool choice '${normalized.tool_choice.type}' is not supported by provider '${adapter.provider_name}'.`,
+          );
+        }
+        await this.ensureProviderInitialized(adapter);
         const response = await adapter.generate(normalized);
         return ensureGenerateResponse(response as GenerateResponse | Record<string, unknown>);
       };
@@ -342,7 +374,15 @@ export class UnifiedClient implements LLMClient {
 
   private async *streamWithNormalizedRequest(request: GenerateRequest): AsyncIterable<StreamEvent> {
     const normalized = await normalizeRequestImages(request);
+    assertValidToolDefinitions(normalized);
     const adapter = this.resolveProvider(normalized.provider);
+    if (normalized.tool_choice && !adapter.supports_tool_choice(normalized.tool_choice.type)) {
+      throw new UnsupportedToolChoiceError(
+        adapter.provider_name,
+        `Tool choice '${normalized.tool_choice.type}' is not supported by provider '${adapter.provider_name}'.`,
+      );
+    }
+    await this.ensureProviderInitialized(adapter);
     for await (const event of adapter.stream(normalized)) {
       yield event;
     }
@@ -567,6 +607,17 @@ export class UnifiedClient implements LLMClient {
       stop_reason: response.stop_reason
     };
   }
+
+  async close(): Promise<void> {
+    await Promise.allSettled(
+      Array.from(this.providers.values()).map(async (provider) => {
+        if (provider.close) {
+          await provider.close();
+        }
+      }),
+    );
+    this.initializedProviders.clear();
+  }
 }
 
 // Legacy factory — now returns UnifiedClient which implements LLMClient
@@ -632,10 +683,11 @@ function normalizeToolResult(result: unknown): string {
 
 async function executeToolCalls(
   toolCalls: ToolCallContentPart[],
-  handlers: Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>,
+  handlers: Map<string, { execute: (args: Record<string, unknown>, context: ToolContext) => Promise<string>; input_schema?: Record<string, unknown> }>,
   contextMessages: Message[],
   abortSignal?: AbortSignal,
-): Promise<ToolResultContentPart[]> {
+): Promise<{ results: ToolResultContentPart[]; warnings: Array<{ code?: string; message: string }> }> {
+  const warnings: Array<{ code?: string; message: string }> = [];
   const calls = toolCalls.map(async (call): Promise<ToolResultContentPart> => {
     const handler = handlers.get(call.name);
     if (!handler) {
@@ -647,29 +699,30 @@ async function executeToolCalls(
       };
     }
 
-    let parsedArgs: Record<string, unknown>;
-    try {
-      const parsed = call.arguments ? JSON.parse(call.arguments) : {};
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return {
-          type: 'tool_result',
-          tool_call_id: call.id,
-          content: `Invalid arguments for '${call.name}': expected a JSON object.`,
-          is_error: true,
-        };
-      }
-      parsedArgs = parsed as Record<string, unknown>;
-    } catch (error) {
+    const repaired = repairToolCall({
+      tool_name: call.name,
+      raw_arguments: call.arguments,
+      schema: handler.input_schema,
+    });
+
+    if (!repaired.ok) {
       return {
         type: 'tool_result',
         tool_call_id: call.id,
-        content: `Invalid JSON arguments for '${call.name}': ${error instanceof Error ? error.message : String(error)}`,
+        content: repaired.error.message,
         is_error: true,
       };
     }
 
+    if (repaired.call.changed && repaired.call.warning) {
+      warnings.push({
+        code: 'tool_call_repaired',
+        message: repaired.call.warning,
+      });
+    }
+
     try {
-      const output = await handler(parsedArgs, {
+      const output = await handler.execute(repaired.call.arguments, {
         messages: contextMessages,
         abort_signal: abortSignal,
         tool_call_id: call.id,
@@ -690,27 +743,33 @@ async function executeToolCalls(
     }
   });
 
-  return Promise.all(calls);
+  const results = await Promise.all(calls);
+  return { results, warnings };
 }
 
 function resolveToolHandlers(
   requestTools: ToolDefinition[] | undefined,
   legacyTools: Map<string, (args: unknown) => Promise<unknown>> | undefined,
-): Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>> {
-  const handlers = new Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>();
+): Map<string, { execute: (args: Record<string, unknown>, context: ToolContext) => Promise<string>; input_schema?: Record<string, unknown> }> {
+  const handlers = new Map<string, { execute: (args: Record<string, unknown>, context: ToolContext) => Promise<string>; input_schema?: Record<string, unknown> }>();
 
   for (const tool of requestTools ?? []) {
     if (!isActiveTool(tool)) {
       continue;
     }
-    handlers.set(tool.name, async (args, context) => tool.execute(args, context));
+    handlers.set(tool.name, {
+      execute: async (args, context) => tool.execute(args, context),
+      input_schema: tool.input_schema,
+    });
   }
 
   for (const [name, handler] of legacyTools ?? []) {
     if (handlers.has(name)) {
       continue;
     }
-    handlers.set(name, async (args) => normalizeToolResult(await handler(args)));
+    handlers.set(name, {
+      execute: async (args) => normalizeToolResult(await handler(args)),
+    });
   }
 
   return handlers;
@@ -718,7 +777,7 @@ function resolveToolHandlers(
 
 function shouldAutoExecuteAllCalls(
   toolCalls: ToolCallContentPart[],
-  handlers: Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>,
+  handlers: Map<string, { execute: (args: Record<string, unknown>, context: ToolContext) => Promise<string>; input_schema?: Record<string, unknown> }>,
 ): boolean {
   return toolCalls.every((toolCall) => handlers.has(toolCall.name));
 }
@@ -745,6 +804,34 @@ function resolveMaxToolRounds(request: GenerateRequest, opts?: GenerateOptions):
   return 1;
 }
 
+function resolvePerStepTimeoutMs(request: GenerateRequest): number | undefined {
+  if (!request.timeout || typeof request.timeout === 'number') {
+    return undefined;
+  }
+  const perStep = request.timeout.per_step_ms;
+  if (typeof perStep !== 'number' || !Number.isFinite(perStep) || perStep <= 0) {
+    return undefined;
+  }
+  return Math.floor(perStep);
+}
+
+function withPerStepTimeout(request: GenerateRequest): GenerateRequest {
+  const perStepMs = resolvePerStepTimeoutMs(request);
+  if (perStepMs === undefined) {
+    return request;
+  }
+
+  const timeout = typeof request.timeout === 'number'
+    ? { request_ms: perStepMs, per_step_ms: perStepMs }
+    : { ...(request.timeout ?? {}), request_ms: perStepMs, per_step_ms: perStepMs };
+
+  return {
+    ...request,
+    timeout,
+    timeout_ms: perStepMs,
+  };
+}
+
 /**
  * Module-level generate — delegates to the default client.
  */
@@ -758,9 +845,10 @@ export async function generate(
   const maxIterations = resolveMaxToolRounds(normalizedRequest, opts);
   const steps: StepResult[] = [];
   let totalUsage: Usage = toUsage({ input_tokens: 0, output_tokens: 0 });
+  const loopWarnings: Array<{ code?: string; message: string }> = [];
   let iteration = 0;
   let currentRequest = normalizedRequest;
-  let response = await client.generateUnified(currentRequest);
+  let response = await client.generateUnified(withPerStepTimeout(currentRequest));
 
   while (true) {
     const toolCalls = extractToolCalls(response);
@@ -786,8 +874,13 @@ export async function generate(
     }
 
     const contextMessages = [...(currentRequest.messages ?? []), response.message];
-    const toolResults = await executeToolCalls(toolCalls, handlers, contextMessages, currentRequest.abort_signal);
+    const toolExecution = await executeToolCalls(toolCalls, handlers, contextMessages, currentRequest.abort_signal);
+    const toolResults = toolExecution.results;
     steps[steps.length - 1]!.tool_results = toolResults;
+    if (toolExecution.warnings.length > 0) {
+      response.warnings.push(...toolExecution.warnings);
+      loopWarnings.push(...toolExecution.warnings);
+    }
 
     const toolMessage = {
       role: 'tool' as const,
@@ -798,8 +891,19 @@ export async function generate(
       messages: [...(currentRequest.messages ?? []), response.message, toolMessage],
     };
 
-    response = await client.generateUnified(currentRequest);
+    response = await client.generateUnified(withPerStepTimeout(currentRequest));
     iteration += 1;
+  }
+
+  if (loopWarnings.length > 0) {
+    for (const warning of loopWarnings) {
+      const exists = response.warnings.some((existing) => (
+        existing.code === warning.code && existing.message === warning.message
+      ));
+      if (!exists) {
+        response.warnings.push(warning);
+      }
+    }
   }
 
   return new GenerateResult({
@@ -888,7 +992,7 @@ export class StreamResult implements AsyncIterable<StreamEvent> {
 async function* streamWithToolLoop(
   request: GenerateRequest,
   client: UnifiedClient,
-  handlers: Map<string, (args: Record<string, unknown>, context: ToolContext) => Promise<string>>,
+  handlers: Map<string, { execute: (args: Record<string, unknown>, context: ToolContext) => Promise<string>; input_schema?: Record<string, unknown> }>,
 ): AsyncIterable<StreamEvent> {
   let currentRequest = normalizePromptRequest(request);
   let step = 0;
@@ -902,7 +1006,7 @@ async function* streamWithToolLoop(
       model: currentRequest.model,
     });
 
-    for await (const event of client.stream(currentRequest)) {
+    for await (const event of client.stream(withPerStepTimeout(currentRequest))) {
       stepAccumulator.push(event);
       yield event;
     }
@@ -931,7 +1035,11 @@ async function* streamWithToolLoop(
     }
 
     const contextMessages = [...(currentRequest.messages ?? []), response.message];
-    const toolResults = await executeToolCalls(toolCalls, handlers, contextMessages, currentRequest.abort_signal);
+    const toolExecution = await executeToolCalls(toolCalls, handlers, contextMessages, currentRequest.abort_signal);
+    const toolResults = toolExecution.results;
+    if (toolExecution.warnings.length > 0) {
+      response.warnings.push(...toolExecution.warnings);
+    }
     currentRequest = {
       ...currentRequest,
       messages: [...(currentRequest.messages ?? []), response.message, { role: 'tool', content: toolResults }],

@@ -65,6 +65,21 @@ describe('AutoApproveInterviewer', () => {
     const answer = await auto.ask(makeQuestion({ choices: [], default_choice: undefined }));
     expect(answer.selected_label).toBe('');
   });
+
+  it('treats CONFIRMATION prompts like YES_NO and picks an affirmative option', async () => {
+    const auto = new AutoApproveInterviewer();
+    const answer = await auto.ask(
+      makeQuestion({
+        type: 'CONFIRMATION',
+        choices: [
+          { label: 'Decline', edge_target: 'stop' },
+          { label: 'Approve', edge_target: 'go' },
+        ],
+      }),
+    );
+    expect(answer.selected_label).toBe('Approve');
+    expect(answer.answer_value).toBe(AnswerValue.YES);
+  });
 });
 
 describe('RecordingInterviewer', () => {

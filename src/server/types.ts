@@ -64,7 +64,7 @@ export interface EventEnvelope {
   event: RunEvent;
 }
 
-export type StoredQuestionStatus = 'pending' | 'answered' | 'timed_out';
+export type StoredQuestionStatus = 'pending' | 'answered' | 'timed_out' | 'interrupted';
 
 export interface StoredQuestionResource {
   question_id: string;

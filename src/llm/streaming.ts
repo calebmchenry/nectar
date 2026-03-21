@@ -4,15 +4,16 @@ import { TimeoutAbortError } from './timeouts.js';
 
 export type StreamEvent =
   | { type: 'stream_start'; model: string }
-  | { type: 'text_start' }
-  | { type: 'content_delta'; text: string }
-  | { type: 'text_end' }
+  | { type: 'text_start'; text_id?: string }
+  | { type: 'content_delta'; text: string; text_id?: string }
+  | { type: 'text_end'; text_id?: string }
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; name?: string; arguments_delta: string }
   | { type: 'tool_call_end'; id: string; name: string; arguments: string }
   | { type: 'thinking_start' }
   | { type: 'thinking_delta'; text: string }
   | { type: 'thinking_end' }
+  | { type: 'provider_event'; provider: string; provider_event: { type: string; data: unknown } }
   | { type: 'usage'; usage: Usage }
   | { type: 'step_finish'; step: number; response: GenerateResponse }
   | { type: 'stream_end'; stop_reason: StopReason | FinishReasonValue; message: Message; response: GenerateResponse }

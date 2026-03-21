@@ -23,6 +23,40 @@ describe('garden validate', () => {
     expect(errors).not.toContain('TOOL_SCRIPT_REQUIRED');
   });
 
+  it('rejects graphs with zero root exit nodes', () => {
+    const errors = codes(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, tool_command="echo hi"]\nstart -> mid }`);
+    expect(errors).toContain('EXIT_NODE_COUNT');
+  });
+
+  it('rejects graphs with multiple root exit nodes', () => {
+    const errors = codes(`digraph G {
+      start [shape=Mdiamond]
+      choose [shape=diamond]
+      done_a [shape=Msquare]
+      done_b [shape=Msquare]
+      start -> choose
+      choose -> done_a
+      choose -> done_b
+    }`);
+    expect(errors).toContain('EXIT_NODE_COUNT');
+  });
+
+  it('ignores imported exit nodes when counting root exits', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      imported_done [shape=Msquare]
+      done [shape=Msquare]
+      start -> done
+      start -> imported_done
+    }`);
+    const imported = graph.nodeMap.get('imported_done');
+    if (imported) {
+      imported.provenance = { dotPath: 'gardens/imported.dot', originalId: 'done' };
+    }
+    const codes = validateGarden(graph).map((diagnostic) => diagnostic.code);
+    expect(codes).not.toContain('EXIT_NODE_COUNT');
+  });
+
   it('warns when only legacy script is provided', () => {
     const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, script="echo hi"]\nend [shape=Msquare]\nstart -> mid\nmid -> end }`);
     const diags = validateGarden(graph);

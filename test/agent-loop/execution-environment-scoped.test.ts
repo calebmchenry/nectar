@@ -1,6 +1,6 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { LocalExecutionEnvironment, _filterEnvForTest } from '../../src/agent-loop/execution-environment.js';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -16,6 +16,15 @@ async function createWorkspace(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'nectar-env-'));
   tempDirs.push(dir);
   return dir;
+}
+
+async function heartbeatSize(filePath: string): Promise<number> {
+  try {
+    const info = await stat(filePath);
+    return info.size;
+  } catch {
+    return 0;
+  }
 }
 
 describe('ExecutionEnvironment cwd and scoped()', () => {
@@ -115,6 +124,57 @@ describe('ExecutionEnvironment cwd and scoped()', () => {
     const result = await env.exec('sleep 1', { timeout_ms: 10 });
     expect(result.timed_out).toBe(true);
     expect(result.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('timeout kills the full process group (including grandchildren)', async () => {
+    if (!['darwin', 'linux'].includes(process.platform)) {
+      return;
+    }
+
+    const workspace = await createWorkspace();
+    const env = new LocalExecutionEnvironment(workspace);
+    const heartbeatPath = path.join(workspace, 'timeout-heartbeat.log');
+    const fixturePath = path.resolve('test/fixtures/process-tree.mjs');
+    const command = `node ${JSON.stringify(fixturePath)} ${JSON.stringify(heartbeatPath)}`;
+
+    const result = await env.exec(command, { timeout_ms: 250 });
+    expect(result.timed_out).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const sizeBefore = await heartbeatSize(heartbeatPath);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const sizeAfter = await heartbeatSize(heartbeatPath);
+    expect(sizeAfter).toBe(sizeBefore);
+  });
+
+  it('abort kills the full process group (including grandchildren)', async () => {
+    if (!['darwin', 'linux'].includes(process.platform)) {
+      return;
+    }
+
+    const workspace = await createWorkspace();
+    const env = new LocalExecutionEnvironment(workspace);
+    const heartbeatPath = path.join(workspace, 'abort-heartbeat.log');
+    const fixturePath = path.resolve('test/fixtures/process-tree.mjs');
+    const command = `node ${JSON.stringify(fixturePath)} ${JSON.stringify(heartbeatPath)}`;
+    const controller = new AbortController();
+
+    const pending = env.exec(command, {
+      timeout_ms: 10_000,
+      abort_signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    controller.abort();
+
+    const result = await pending;
+    expect(result.timed_out).toBe(false);
+    expect(result.exitCode).toBe(130);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const sizeBefore = await heartbeatSize(heartbeatPath);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const sizeAfter = await heartbeatSize(heartbeatPath);
+    expect(sizeAfter).toBe(sizeBefore);
   });
 
   it('allowlist retains language toolchain roots while stripping secrets', () => {

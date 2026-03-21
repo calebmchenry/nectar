@@ -1,3 +1,7 @@
+import { GardenParseError } from '../garden/parse.js';
+import { PipelinePreparer } from '../garden/preparer.js';
+import type { Diagnostic } from '../garden/types.js';
+import type { WorkspaceConfigLoader } from '../config/workspace.js';
 import { UnifiedClient } from '../llm/client.js';
 import type { Message, Usage } from '../llm/types.js';
 
@@ -7,6 +11,7 @@ const DRAFT_SYSTEM_PROMPT = [
   'Do not include markdown, code fences, or commentary.',
   'Do not wrap the result in backticks.',
   'Start with "digraph" and end with "}".',
+  'Include exactly one start node (Mdiamond) and exactly one root exit node (Msquare).',
 ].join(' ');
 
 export interface GardenDraftInput {
@@ -44,11 +49,25 @@ export class DraftFormatError extends Error {
   }
 }
 
+export class DraftValidationError extends Error {
+  readonly diagnostics: Diagnostic[];
+
+  constructor(message: string, diagnostics: Diagnostic[]) {
+    super(message);
+    this.name = 'DraftValidationError';
+    this.diagnostics = diagnostics;
+  }
+}
+
 export class GardenDraftService {
   private readonly client: UnifiedClient;
+  private readonly preparer: PipelinePreparer;
+  private readonly configLoader?: WorkspaceConfigLoader;
 
-  constructor(client?: UnifiedClient) {
+  constructor(client?: UnifiedClient, preparer?: PipelinePreparer, configLoader?: WorkspaceConfigLoader) {
     this.client = client ?? UnifiedClient.from_env();
+    this.preparer = preparer ?? new PipelinePreparer();
+    this.configLoader = configLoader;
   }
 
   async *streamDraft(input: GardenDraftInput, abortSignal?: AbortSignal): AsyncIterable<GardenDraftEvent> {
@@ -57,13 +76,16 @@ export class GardenDraftService {
       throw new Error('prompt is required.');
     }
 
-    const provider = this.resolveProvider(input.provider);
+    const loadedConfig = await this.configLoader?.load();
+    const resolved = this.resolveSelection(input, loadedConfig?.resolved.draft);
+    const provider = resolved.provider;
+    const model = resolved.model;
     const messages: Message[] = [{ role: 'user', content: prompt }];
 
     yield {
       type: 'draft_start',
       provider,
-      model: input.model,
+      model,
       timestamp: new Date().toISOString(),
     };
 
@@ -78,10 +100,11 @@ export class GardenDraftService {
           text: chunk,
         };
       }
+      await this.validateDraftDot(simulatedDot);
       yield {
         type: 'draft_complete',
         provider,
-        model: input.model ?? 'simulation',
+        model,
         dot_source: simulatedDot,
       };
       return;
@@ -90,9 +113,10 @@ export class GardenDraftService {
     let usage: Usage | undefined;
     let text = '';
 
+    const requestModel = model === 'default' ? undefined : model;
     for await (const event of this.client.stream({
       provider,
-      model: input.model,
+      model: requestModel,
       system: DRAFT_SYSTEM_PROMPT,
       messages,
       reasoning_effort: 'low',
@@ -127,10 +151,11 @@ export class GardenDraftService {
         if (!looksLikeDot(text)) {
           throw new DraftFormatError('Draft response was not DOT source.');
         }
+        await this.validateDraftDot(text);
         yield {
           type: 'draft_complete',
           provider,
-          model: input.model ?? 'default',
+          model,
           dot_source: text,
           usage,
         };
@@ -145,27 +170,79 @@ export class GardenDraftService {
     throw new Error('Draft stream ended unexpectedly.');
   }
 
-  private resolveProvider(requested?: string): string {
+  private resolveSelection(
+    input: GardenDraftInput,
+    configDraft?: { provider: string; model: string },
+  ): { provider: string; model: string } {
     const available = this.client.available_providers();
-    const realProviders = available.filter((provider) => provider !== 'simulation');
+    const requestedProvider = normalizeString(input.provider);
+    const requestedModel = normalizeString(input.model);
 
-    if (!requested || requested.trim().length === 0) {
-      return realProviders[0] ?? 'simulation';
+    const provider = requestedProvider
+      ?? normalizeString(configDraft?.provider)
+      ?? 'simulation';
+
+    if (!available.includes(provider)) {
+      throw new Error(
+        `Provider '${provider}' is not configured. Available providers: ${available.join(', ')}`
+      );
     }
 
-    const normalized = requested.trim();
-    if (available.includes(normalized)) {
-      return normalized;
-    }
+    const configModel = normalizeString(configDraft?.model);
+    const model = requestedModel
+      ?? (requestedProvider ? undefined : configModel)
+      ?? (provider === 'simulation' ? 'simulation' : 'default');
 
-    if (realProviders.length === 0) {
-      return 'simulation';
-    }
-
-    throw new Error(
-      `Provider '${normalized}' is not configured. Available providers: ${available.join(', ')}`
-    );
+    return {
+      provider,
+      model,
+    };
   }
+
+  private async validateDraftDot(dotSource: string): Promise<void> {
+    try {
+      const prepared = await this.preparer.prepareFromSource(dotSource, '<draft>');
+      const errors = prepared.diagnostics.filter((diagnostic) => diagnostic.severity === 'error');
+      if (errors.length === 0) {
+        return;
+      }
+      const preview = errors
+        .slice(0, 3)
+        .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
+        .join('; ');
+      throw new DraftValidationError(
+        `Draft DOT failed validation (${errors.length} error${errors.length === 1 ? '' : 's'}). ${preview}`,
+        errors,
+      );
+    } catch (error) {
+      if (error instanceof DraftValidationError) {
+        throw error;
+      }
+      if (error instanceof GardenParseError) {
+        throw new DraftValidationError('Draft DOT failed to parse.', [
+          {
+            severity: 'error',
+            code: 'DOT_PARSE_ERROR',
+            message: error.message,
+            file: '<draft>',
+            location: error.location,
+          },
+        ]);
+      }
+      throw error;
+    }
+  }
+}
+
+function normalizeString(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function containsMarkdownFence(text: string): boolean {

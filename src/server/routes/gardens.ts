@@ -1,8 +1,10 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { WorkspaceConfigLoader } from '../../config/workspace.js';
 import { parseGardenSource } from '../../garden/parse.js';
 import { PipelinePreparer } from '../../garden/preparer.js';
-import { GardenDraftService } from '../../runtime/garden-draft-service.js';
+import type { UnifiedClient } from '../../llm/client.js';
+import { DraftValidationError, GardenDraftService } from '../../runtime/garden-draft-service.js';
 import { GardenPreviewService } from '../../runtime/garden-preview-service.js';
 import { Router, HttpError, type RouteContext } from '../router.js';
 import { RunManager } from '../run-manager.js';
@@ -12,6 +14,8 @@ import { DRAFT_TERMINAL_EVENT_TYPES } from '../types.js';
 export interface GardenRoutesOptions {
   workspace_root: string;
   run_manager: RunManager;
+  config_loader: WorkspaceConfigLoader;
+  client: UnifiedClient;
 }
 
 export function registerGardenRoutes(router: Router, options: GardenRoutesOptions): void {
@@ -19,7 +23,7 @@ export function registerGardenRoutes(router: Router, options: GardenRoutesOption
   const runManager = options.run_manager;
   const previewPreparer = new PipelinePreparer({ workspaceRoot });
   const previewService = new GardenPreviewService(undefined, previewPreparer);
-  const draftService = new GardenDraftService();
+  const draftService = new GardenDraftService(options.client, undefined, options.config_loader);
 
   router.register('GET', '/gardens', async (ctx) => {
     const gardensDir = path.join(workspaceRoot, 'gardens');
@@ -127,12 +131,19 @@ export function registerGardenRoutes(router: Router, options: GardenRoutesOption
       terminal_events: DRAFT_TERMINAL_EVENT_TYPES,
     });
 
+    let closed = false;
     const onClose = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
       abortController.abort();
       if (activeDraftsByTab.get(tabId) === abortController) {
         activeDraftsByTab.delete(tabId);
       }
+      ctx.res.off('close', onClose);
     };
+    ctx.res.on('close', onClose);
     stream.onClose(onClose);
 
     try {
@@ -158,10 +169,18 @@ export function registerGardenRoutes(router: Router, options: GardenRoutesOption
     } catch (error) {
       if (!stream.terminalEmitted() && !stream.isClosed()) {
         const message = error instanceof Error ? error.message : String(error);
-        stream.send('draft_error', {
-          type: 'draft_error',
-          error: message,
-        });
+        if (error instanceof DraftValidationError) {
+          stream.send('draft_error', {
+            type: 'draft_error',
+            error: message,
+            diagnostics: error.diagnostics,
+          });
+        } else {
+          stream.send('draft_error', {
+            type: 'draft_error',
+            error: message,
+          });
+        }
       }
     } finally {
       if (activeDraftsByTab.get(tabId) === abortController) {

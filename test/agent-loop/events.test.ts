@@ -89,6 +89,8 @@ describe('Agent session event metadata', () => {
     if (toolCompleted?.type === 'agent_tool_call_completed') {
       expect(toolCompleted.content_preview).toBeDefined();
       expect(typeof toolCompleted.content_preview).toBe('string');
+      expect(toolCompleted.full_content).toBeDefined();
+      expect(typeof toolCompleted.full_content).toBe('string');
       // Not truncated for small output
       expect(toolCompleted.truncated).toBe(false);
     }

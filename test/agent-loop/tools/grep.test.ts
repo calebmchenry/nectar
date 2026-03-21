@@ -50,7 +50,17 @@ describe('grep tool', () => {
     expect(result).not.toContain('test/b.ts');
   });
 
-  it('filters by include pattern', async () => {
+  it('filters by glob_filter pattern', async () => {
+    const env = await setup();
+    await writeFile(path.join(env.workspaceRoot, 'a.ts'), 'FIND\n', 'utf8');
+    await writeFile(path.join(env.workspaceRoot, 'b.js'), 'FIND\n', 'utf8');
+
+    const result = await grepHandler({ pattern: 'FIND', glob_filter: '*.ts' }, env);
+    expect(result).toContain('a.ts');
+    expect(result).not.toContain('b.js');
+  });
+
+  it('keeps include as an alias for glob_filter', async () => {
     const env = await setup();
     await writeFile(path.join(env.workspaceRoot, 'a.ts'), 'FIND\n', 'utf8');
     await writeFile(path.join(env.workspaceRoot, 'b.js'), 'FIND\n', 'utf8');

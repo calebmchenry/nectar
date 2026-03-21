@@ -51,8 +51,21 @@ async function waitForStatus(baseUrl: string, runId: string, target: string, tim
   throw new Error(`Run '${runId}' did not reach status '${target}' within ${timeoutMs}ms`);
 }
 
+async function waitForQuestion(baseUrl: string, runId: string, timeoutMs = 10_000): Promise<{ question_id: string }> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const res = await fetch(`${baseUrl}/pipelines/${runId}/questions`);
+    const body = (await res.json()) as { questions: Array<{ question_id: string }> };
+    if (body.questions.length > 0) {
+      return body.questions[0]!;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Run '${runId}' did not expose a pending question within ${timeoutMs}ms`);
+}
+
 describe('HTTP cancel and resume flow', () => {
-  it('cancels an active run and resumes it to completion', async () => {
+  it('cancels a wait.human run, resumes with a fresh question, and rejects stale answers', async () => {
     if (!(await canListenOnLoopback())) {
       return;
     }
@@ -63,9 +76,15 @@ describe('HTTP cancel and resume flow', () => {
     }
     const dotSource = `digraph G {
       start [shape=Mdiamond]
-      slow [shape=parallelogram, tool_command="node -e \\"setTimeout(() => process.exit(0), 2000)\\""]
+      approval [shape=hexagon, label="Deploy?"]
+      deploy [shape=parallelogram, tool_command="echo deploy"]
+      reject [shape=parallelogram, tool_command="echo reject"]
       done [shape=Msquare]
-      start -> slow -> done
+      start -> approval
+      approval -> deploy [label="Yes"]
+      approval -> reject [label="No"]
+      deploy -> done
+      reject -> done
     }`;
 
     const createRes = await fetch(`${server.base_url}/pipelines`, {
@@ -76,6 +95,8 @@ describe('HTTP cancel and resume flow', () => {
     expect(createRes.status).toBe(202);
     const created = (await createRes.json()) as { run_id: string };
 
+    const firstQuestion = await waitForQuestion(server.base_url, created.run_id);
+
     const cancelRes = await fetch(`${server.base_url}/pipelines/${created.run_id}/cancel`, { method: 'POST' });
     expect(cancelRes.status).toBe(200);
     const cancelled = (await cancelRes.json()) as { status: string };
@@ -85,8 +106,35 @@ describe('HTTP cancel and resume flow', () => {
     const checkpoint = (await checkpointRes.json()) as { interruption_reason?: string };
     expect(checkpoint.interruption_reason).toBe('api_cancel');
 
+    const pendingAfterCancelRes = await fetch(`${server.base_url}/pipelines/${created.run_id}/questions`);
+    const pendingAfterCancel = (await pendingAfterCancelRes.json()) as { questions: Array<{ question_id: string }> };
+    expect(pendingAfterCancel.questions).toHaveLength(0);
+
     const resumeRes = await fetch(`${server.base_url}/pipelines/${created.run_id}/resume`, { method: 'POST' });
     expect(resumeRes.status).toBe(202);
+
+    const resumedQuestion = await waitForQuestion(server.base_url, created.run_id);
+    expect(resumedQuestion.question_id).not.toBe(firstQuestion.question_id);
+
+    const staleAnswerRes = await fetch(
+      `${server.base_url}/pipelines/${created.run_id}/questions/${firstQuestion.question_id}/answer`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ selected_label: 'Yes' }),
+      },
+    );
+    expect(staleAnswerRes.status).toBe(409);
+
+    const answerRes = await fetch(
+      `${server.base_url}/pipelines/${created.run_id}/questions/${resumedQuestion.question_id}/answer`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ selected_label: 'Yes' }),
+      },
+    );
+    expect(answerRes.status).toBe(200);
 
     await waitForStatus(server.base_url, created.run_id, 'completed', 15_000);
   });

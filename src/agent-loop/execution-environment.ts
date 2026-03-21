@@ -217,50 +217,92 @@ export class LocalExecutionEnvironment implements ExecutionEnvironment {
     const timeoutMs = options?.timeout_ms ?? 120_000;
     const filteredEnv = filterEnv(process.env);
     const startedMs = Date.now();
+    const supportsProcessGroups = process.platform === 'darwin' || process.platform === 'linux';
+    const subprocess = execaCommand(command, {
+      cwd: this.cwd,
+      env: filteredEnv,
+      extendEnv: false,
+      shell: true,
+      reject: false,
+      detached: supportsProcessGroups,
+      timeout: undefined,
+      cancelSignal: undefined,
+      windowsHide: true,
+    });
 
-    try {
-      const result = await execaCommand(command, {
-        cwd: this.cwd,
-        env: filteredEnv,
-        extendEnv: false,
-        timeout: timeoutMs,
-        shell: true,
-        killSignal: 'SIGTERM',
-        forceKillAfterDelay: 2000,
-        reject: false,
-        cancelSignal: options?.abort_signal,
-      });
+    let timedOut = false;
+    let cancelled = false;
+    let completed = false;
+    let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
 
-      return {
-        stdout: String(result.stdout ?? ''),
-        stderr: String(result.stderr ?? ''),
-        exitCode: (result as unknown as { timedOut?: boolean }).timedOut ? 124 : (result.exitCode ?? 0),
-        timed_out: Boolean((result as unknown as { timedOut?: boolean }).timedOut),
-        duration_ms: Math.max(0, Date.now() - startedMs),
-      };
-    } catch (error: unknown) {
-      if (error && typeof error === 'object' && 'timedOut' in error && (error as { timedOut: boolean }).timedOut) {
-        return {
-          stdout: String((error as { stdout?: unknown }).stdout ?? ''),
-          stderr: String((error as { stderr?: unknown }).stderr ?? ''),
-          exitCode: 124,
-          timed_out: true,
-          duration_ms: Math.max(0, Date.now() - startedMs),
-        };
+    const terminateTree = (reason: 'timeout' | 'abort') => {
+      if (completed) {
+        return;
+      }
+      if (reason === 'timeout') {
+        timedOut = true;
+      } else {
+        cancelled = true;
       }
 
-      if (error && typeof error === 'object' && 'isCanceled' in error && (error as { isCanceled: boolean }).isCanceled) {
-        return {
-          stdout: String((error as { stdout?: unknown }).stdout ?? ''),
-          stderr: 'Command cancelled',
-          exitCode: 130,
-          timed_out: false,
-          duration_ms: Math.max(0, Date.now() - startedMs),
-        };
+      const pid = typeof subprocess.pid === 'number' ? subprocess.pid : undefined;
+      if (supportsProcessGroups && pid && pid > 0) {
+        safeKillProcessGroup(pid, 'SIGTERM');
+        hardKillTimer = setTimeout(() => {
+          safeKillProcessGroup(pid, 'SIGKILL');
+        }, 2000);
+        hardKillTimer.unref?.();
+        return;
       }
 
-      throw error;
+      safeKillProcess(subprocess, 'SIGTERM');
+      hardKillTimer = setTimeout(() => {
+        safeKillProcess(subprocess, 'SIGKILL');
+      }, 2000);
+      hardKillTimer.unref?.();
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      terminateTree('timeout');
+    }, timeoutMs);
+    timeoutTimer.unref?.();
+
+    const onAbort = () => {
+      terminateTree('abort');
+    };
+    if (options?.abort_signal?.aborted) {
+      onAbort();
+    } else {
+      options?.abort_signal?.addEventListener('abort', onAbort, { once: true });
     }
+
+    let settled: unknown;
+    try {
+      settled = await subprocess;
+    } catch (error) {
+      settled = error;
+    } finally {
+      completed = true;
+      clearTimeout(timeoutTimer);
+      if (hardKillTimer) {
+        clearTimeout(hardKillTimer);
+      }
+      options?.abort_signal?.removeEventListener('abort', onAbort);
+    }
+
+    const stdout = String((settled as { stdout?: unknown })?.stdout ?? '');
+    let stderr = String((settled as { stderr?: unknown })?.stderr ?? '');
+    if (cancelled && !timedOut && stderr.trim().length === 0) {
+      stderr = 'Command cancelled';
+    }
+
+    return {
+      stdout,
+      stderr,
+      exitCode: timedOut ? 124 : cancelled ? 130 : resolveExitCode(settled),
+      timed_out: timedOut,
+      duration_ms: Math.max(0, Date.now() - startedMs),
+    };
   }
 
   async glob(pattern: string): Promise<string[]> {
@@ -335,3 +377,26 @@ async function walkDirectory(input: {
 }
 
 export { filterEnv as _filterEnvForTest };
+
+function resolveExitCode(result: unknown): number {
+  if (result && typeof result === 'object' && 'exitCode' in result && typeof (result as { exitCode?: unknown }).exitCode === 'number') {
+    return (result as { exitCode: number }).exitCode;
+  }
+  return 1;
+}
+
+function safeKillProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // best-effort group kill
+  }
+}
+
+function safeKillProcess(subprocess: { kill: (signal?: NodeJS.Signals | number) => boolean }, signal: NodeJS.Signals): void {
+  try {
+    subprocess.kill(signal);
+  } catch {
+    // best-effort process kill
+  }
+}

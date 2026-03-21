@@ -111,4 +111,60 @@ describe('prompted fan-in integration', () => {
     const artifact = await readFile(artifactPath, 'utf8');
     expect(artifact).toContain('selected_branch_id');
   });
+
+  it('allows downstream routing on context.fan_in_selected_status when prompted fan-in selects a failed branch', async () => {
+    if (!(await canListenOnLoopback())) {
+      return;
+    }
+
+    const ws = await workspace();
+    const server = await boot(ws);
+    if (!server) {
+      return;
+    }
+
+    const source = `digraph FanInRouting {
+      start [shape=Mdiamond]
+      fan_out [shape=component]
+      ok_branch [shape=parallelogram, script="echo ok"]
+      failed_branch [shape=parallelogram, script="exit 1"]
+      fan_in [shape=tripleoctagon, prompt="Select the branch to proceed with."]
+      route [shape=diamond]
+      handled_failure [shape=Msquare]
+      fallback [shape=Msquare]
+
+      start -> fan_out
+      fan_out -> failed_branch
+      fan_out -> ok_branch
+      ok_branch -> fan_in
+      failed_branch -> fan_in
+      fan_in -> route
+      route -> handled_failure [condition="context.fan_in_selected_status=failure"]
+      route -> fallback
+    }`;
+
+    await writeFile(path.join(ws, 'gardens', 'fan-in-routing.dot'), source, 'utf8');
+
+    const createResponse = await fetch(`${server.base_url}/pipelines`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ dot_path: 'gardens/fan-in-routing.dot' }),
+    });
+    expect(createResponse.status).toBe(202);
+    const created = (await createResponse.json()) as { run_id: string };
+
+    const finalStatus = await waitForTerminal(server.base_url, created.run_id);
+    expect(finalStatus).toBe('completed');
+
+    const contextResponse = await fetch(`${server.base_url}/pipelines/${created.run_id}/context`);
+    expect(contextResponse.status).toBe(200);
+    const contextPayload = (await contextResponse.json()) as { context: Record<string, string> };
+    expect(contextPayload.context['fan_in_selected_status']).toBe('failure');
+    expect(contextPayload.context['parallel.fan_in.best_outcome']).toBe('failure');
+
+    const checkpointResponse = await fetch(`${server.base_url}/pipelines/${created.run_id}/checkpoint`);
+    expect(checkpointResponse.status).toBe(200);
+    const checkpoint = (await checkpointResponse.json()) as { completed_nodes: Array<{ node_id: string }> };
+    expect(checkpoint.completed_nodes.some((node) => node.node_id === 'handled_failure')).toBe(true);
+  });
 });

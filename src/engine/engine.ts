@@ -427,13 +427,10 @@ export class PipelineEngine {
               type: 'auto_status_applied',
               run_id: this.runState.run_id,
               node_id: node.id,
-              message: `auto_status applied: defaulting to 'success' for node '${node.id}'`,
+              message: 'auto-status: handler completed without writing status',
             });
           }
         }
-
-        // Write per-node status.json for all node types
-        await this.writeNodeStatus(runDir, node.id, outcome.status, nodeStartedAt, nodeStartTime);
 
         // If codergen completed with full fidelity, track for degraded resume
         if (node.kind === 'codergen' && fidelityPlan?.mode === 'full') {
@@ -481,6 +478,10 @@ export class PipelineEngine {
         if (outcome.status === 'retry' && retryCount >= maxRetries && node.allowPartial) {
           outcome = { ...outcome, status: 'partial_success' };
         }
+        outcome = this.withSynthesizedOutcomeNotes(node, outcome);
+
+        // Write canonical per-node status.json for all node types
+        await this.writeNodeStatus(runDir, node.id, outcome, nodeStartedAt, nodeStartTime);
 
         if (outcome.context_updates) {
           this.context.setMany(outcome.context_updates);
@@ -489,6 +490,7 @@ export class PipelineEngine {
         // GAP-11: Set outcome and preferred_label context keys after node completes
         this.context.set('outcome', outcome.status);
         this.context.set('preferred_label', outcome.preferred_label ?? '');
+        this.context.set(`steps.${node.id}.notes`, outcome.notes ?? '');
 
         const completedAt = new Date().toISOString();
         await this.recordStepResult(node, outcome, completedAt);
@@ -1080,24 +1082,46 @@ export class PipelineEngine {
   private async writeNodeStatus(
     runDir: string,
     nodeId: string,
-    status: string,
+    outcome: NodeOutcome,
     startedAt: string,
     startTimeMs: number
   ): Promise<void> {
     try {
       const nodeDir = path.join(runDir, nodeId);
       await mkdir(nodeDir, { recursive: true });
+      const completedAt = new Date().toISOString();
       const statusData = {
-        status,
+        outcome: outcome.status,
+        status: outcome.status,
         node_id: nodeId,
+        preferred_label: outcome.preferred_label ?? null,
+        suggested_next_ids: outcome.suggested_next ?? [],
+        context_updates: outcome.context_updates ?? {},
+        notes: outcome.notes ?? '',
         started_at: startedAt,
-        completed_at: new Date().toISOString(),
+        completed_at: completedAt,
         duration_ms: Date.now() - startTimeMs
       };
       await writeFile(path.join(nodeDir, 'status.json'), JSON.stringify(statusData, null, 2), 'utf8');
     } catch {
       // Best-effort status writing — don't fail the run
     }
+  }
+
+  private withSynthesizedOutcomeNotes(node: GardenNode, outcome: NodeOutcome): NodeOutcome {
+    if (typeof outcome.notes === 'string' && outcome.notes.trim().length > 0) {
+      return { ...outcome, notes: outcome.notes.trim() };
+    }
+
+    if (outcome.error_message && outcome.error_message.trim().length > 0) {
+      return { ...outcome, notes: outcome.error_message.trim() };
+    }
+
+    if (node.kind === 'tool' && typeof outcome.exit_code === 'number') {
+      return { ...outcome, notes: `Exit code ${outcome.exit_code}` };
+    }
+
+    return { ...outcome, notes: `Node '${node.id}' completed with outcome '${outcome.status}'.` };
   }
 
   private registerSignalHandlers(): () => void {
@@ -1161,17 +1185,16 @@ export class PipelineEngine {
       ?? this.runState.current_node
       ?? this.runState.completed_nodes.at(-1)?.node_id
       ?? 'unknown';
-    this.emitPipelineFailed({
-      failed_at: failedAt,
-      failed_node_id: resolvedFailedNodeId,
-      message,
-    });
-
     this.emit({
       type: 'run_error',
       run_id: this.runState.run_id,
       status: 'failed',
       message
+    });
+    this.emitPipelineFailed({
+      failed_at: failedAt,
+      failed_node_id: resolvedFailedNodeId,
+      message,
     });
 
     return {

@@ -192,6 +192,34 @@ describe('SubagentManager', () => {
     );
   });
 
+  it('spawn_agent max_turns=0 passes explicit unlimited to child', () => {
+    const deps = makeDeps();
+    const manager = new SubagentManager(deps);
+
+    manager.spawn('task', { max_turns: 0 });
+
+    expect(deps.createChildSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxTurns: 0,
+      }),
+    );
+  });
+
+  it('omitting max_turns keeps finite child_max_turns default', () => {
+    const deps = makeDeps({
+      config: { ...DEFAULT_SUBAGENT_CONFIG, child_max_turns: 4 },
+    });
+    const manager = new SubagentManager(deps);
+
+    manager.spawn('task');
+
+    expect(deps.createChildSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxTurns: 4,
+      }),
+    );
+  });
+
   it('spawn passes working_dir to createChildSession', () => {
     const deps = makeDeps();
     const manager = new SubagentManager(deps);

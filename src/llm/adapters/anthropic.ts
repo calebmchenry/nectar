@@ -1,4 +1,4 @@
-import type { ProviderAdapter } from './types.js';
+import type { ProviderAdapter, ToolChoiceMode } from './types.js';
 import {
   GenerateResponse,
   normalizeContent,
@@ -17,6 +17,8 @@ import {
   AbortError,
   AccessDeniedError,
   AuthenticationError,
+  ContentFilterError,
+  ContextLengthError,
   ContextWindowError,
   InvalidRequestError,
   LLMError,
@@ -24,6 +26,7 @@ import {
   OverloadedError,
   QuotaExceededError,
   RateLimitError,
+  RequestTimeoutError,
   ServerError,
   StreamError,
   TimeoutError,
@@ -41,7 +44,7 @@ import {
 const PROVIDER = 'anthropic';
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const API_VERSION = '2023-06-01';
-const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
+const DEFAULT_MODEL = 'claude-sonnet-4-6-20260115';
 const STRUCTURED_OUTPUT_TOOL_NAME = '__structured_output';
 
 function warnUnsupportedContentPart(partType: string): void {
@@ -56,6 +59,7 @@ interface AnthropicContentBlock {
   input?: unknown;
   thinking?: string;
   signature?: string;
+  data?: unknown;
 }
 
 interface AnthropicResponse {
@@ -212,7 +216,10 @@ function translateRequest(request: GenerateRequest): Record<string, unknown> {
           break;
         }
         case 'redacted_thinking':
-          blocks.push({ type: 'redacted_thinking' });
+          blocks.push({
+            type: 'redacted_thinking',
+            ...(part.data !== undefined ? { data: part.data } : {}),
+          });
           break;
       }
     }
@@ -364,7 +371,8 @@ function translateResponse(data: AnthropicResponse, hasStructuredOutput: boolean
             type: 'tool_call',
             id: block.id ?? '',
             name: block.name ?? '',
-            arguments: JSON.stringify(block.input ?? {})
+            arguments: JSON.stringify(block.input ?? {}),
+            tool_type: 'function',
           });
         }
         break;
@@ -377,7 +385,10 @@ function translateResponse(data: AnthropicResponse, hasStructuredOutput: boolean
         break;
       }
       case 'redacted_thinking':
-        parts.push({ type: 'redacted_thinking' });
+        parts.push({
+          type: 'redacted_thinking',
+          ...(block.data !== undefined ? { data: block.data } : {}),
+        });
         break;
     }
   }
@@ -394,7 +405,8 @@ function translateResponse(data: AnthropicResponse, hasStructuredOutput: boolean
       output_tokens: data.usage.output_tokens,
       total_tokens: data.usage.input_tokens + data.usage.output_tokens,
       cache_read_tokens: data.usage.cache_read_input_tokens,
-      cache_write_tokens: data.usage.cache_creation_input_tokens
+      cache_write_tokens: data.usage.cache_creation_input_tokens,
+      raw: data.usage,
     },
     stop_reason: stopReason,
     model: data.model
@@ -456,6 +468,20 @@ function isQuotaExceeded(body: string): boolean {
     || normalized.includes('usage limit');
 }
 
+function isContentFiltered(body: string, errorCode?: string): boolean {
+  const normalized = body.toLowerCase();
+  const normalizedCode = (errorCode ?? '').toLowerCase();
+  return normalized.includes('content_filter')
+    || normalized.includes('content filter')
+    || normalized.includes('safety')
+    || normalized.includes('policy')
+    || normalized.includes('blocked')
+    || normalized.includes('not allowed')
+    || normalizedCode.includes('content')
+    || normalizedCode.includes('safety')
+    || normalizedCode.includes('policy');
+}
+
 function boundedPartialContent(value: string): string | undefined {
   if (!value) {
     return undefined;
@@ -492,8 +518,15 @@ function withErrorMetadata<T extends LLMError>(
 async function classifyError(response: Response): Promise<never> {
   const body = await response.text().catch(() => '');
   const metadata = parseProviderErrorMetadata(body);
+  const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
 
   switch (response.status) {
+    case 408:
+      throw withErrorMetadata(new RequestTimeoutError(PROVIDER, `Anthropic request timeout: ${body}`), metadata);
+    case 413:
+      throw withErrorMetadata(new ContextLengthError(PROVIDER, `Anthropic context length exceeded: ${body}`), metadata);
+    case 422:
+      throw withErrorMetadata(new InvalidRequestError(PROVIDER, `Anthropic invalid request: ${body}`, undefined, 422), metadata);
     case 401:
       throw withErrorMetadata(new AuthenticationError(PROVIDER, `Anthropic authentication failed: ${body}`), metadata);
     case 403:
@@ -505,7 +538,6 @@ async function classifyError(response: Response): Promise<never> {
           metadata,
         );
       }
-      const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
       throw withErrorMetadata(
         new RateLimitError(PROVIDER, { retry_after_ms: retryAfter, message: `Anthropic rate limit: ${body}` }),
         metadata,
@@ -518,17 +550,26 @@ async function classifyError(response: Response): Promise<never> {
           metadata,
         );
       }
-      throw withErrorMetadata(new OverloadedError(PROVIDER, `Anthropic overloaded: ${body}`), metadata);
+      throw withErrorMetadata(
+        new OverloadedError(PROVIDER, { message: `Anthropic overloaded: ${body}`, retry_after_ms: retryAfter }),
+        metadata,
+      );
     case 500:
     case 502:
     case 504:
       throw withErrorMetadata(
-        new ServerError(PROVIDER, { status_code: response.status, message: `Anthropic HTTP ${response.status}: ${body}` }),
+        new ServerError(
+          PROVIDER,
+          { status_code: response.status, retry_after_ms: retryAfter, message: `Anthropic HTTP ${response.status}: ${body}` }
+        ),
         metadata,
       );
     case 400: {
       if (body.includes('context') || body.includes('too long') || body.includes('token')) {
         throw withErrorMetadata(new ContextWindowError(PROVIDER, `Anthropic context window exceeded: ${body}`), metadata);
+      }
+      if (isContentFiltered(body, metadata.errorCode)) {
+        throw withErrorMetadata(new ContentFilterError(PROVIDER, `Anthropic content filtered: ${body}`), metadata);
       }
       throw withErrorMetadata(new InvalidRequestError(PROVIDER, `Anthropic invalid request: ${body}`), metadata);
     }
@@ -545,6 +586,18 @@ export class AnthropicAdapter implements ProviderAdapter {
   constructor(apiKey: string, baseUrl?: string) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl ?? process.env['ANTHROPIC_BASE_URL'] ?? DEFAULT_BASE_URL;
+  }
+
+  async initialize(): Promise<void> {
+    // Stateless adapter; no initialization required.
+  }
+
+  async close(): Promise<void> {
+    // Stateless adapter; no cleanup required.
+  }
+
+  supports_tool_choice(mode: ToolChoiceMode): boolean {
+    return mode === 'auto' || mode === 'none' || mode === 'required' || mode === 'named';
   }
 
   private buildHeaders(request: GenerateRequest, shouldCache: boolean): Record<string, string> {
@@ -669,6 +722,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     // Track synthetic tool for structured output streaming
     let isSyntheticTool = false;
     let syntheticToolArgs = '';
+    const textId = 'text_0';
 
     try {
       for await (const sse of parseSSEStream(response, {
@@ -703,7 +757,8 @@ export class AnthropicAdapter implements ProviderAdapter {
                   output_tokens: u.output_tokens ?? 0,
                   total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
                   cache_read_tokens: u.cache_read_input_tokens,
-                  cache_write_tokens: u.cache_creation_input_tokens
+                  cache_write_tokens: u.cache_creation_input_tokens,
+                  raw: u,
                 };
               }
             }
@@ -721,7 +776,7 @@ export class AnthropicAdapter implements ProviderAdapter {
               }
               if (currentBlockType === 'text') {
                 textActive = true;
-                yield { type: 'text_start' };
+                yield { type: 'text_start', text_id: textId };
               }
               if (currentBlockType === 'tool_use') {
                 const toolName = (block.name as string) ?? '';
@@ -736,6 +791,11 @@ export class AnthropicAdapter implements ProviderAdapter {
                   yield { type: 'tool_call_start', id: currentToolId, name: currentToolName };
                   yield { type: 'tool_call_delta', id: currentToolId, name: currentToolName, arguments_delta: '' };
                 }
+              } else if (currentBlockType === 'redacted_thinking') {
+                parts.push({
+                  type: 'redacted_thinking',
+                  ...(Object.prototype.hasOwnProperty.call(block, 'data') ? { data: block.data } : {}),
+                });
               }
             }
             break;
@@ -750,14 +810,14 @@ export class AnthropicAdapter implements ProviderAdapter {
               const text = (delta.text as string) ?? '';
               partialText += text;
               parts.push({ type: 'text', text });
-              yield { type: 'content_delta', text };
+              yield { type: 'content_delta', text, text_id: textId };
             } else if (deltaType === 'input_json_delta') {
               const partial = (delta.partial_json as string) ?? '';
               if (isSyntheticTool) {
                 syntheticToolArgs += partial;
                 partialText += partial;
                 // Emit as content_delta for structured output streaming
-                yield { type: 'content_delta', text: partial };
+                yield { type: 'content_delta', text: partial, text_id: textId };
               } else {
                 currentToolArgs += partial;
                 yield { type: 'tool_call_delta', id: currentToolId, arguments_delta: partial };
@@ -780,7 +840,7 @@ export class AnthropicAdapter implements ProviderAdapter {
             }
             if (currentBlockType === 'text' && textActive) {
               textActive = false;
-              yield { type: 'text_end' };
+              yield { type: 'text_end', text_id: textId };
             }
             if (currentBlockType === 'tool_use') {
               if (isSyntheticTool) {
@@ -792,7 +852,8 @@ export class AnthropicAdapter implements ProviderAdapter {
                   type: 'tool_call',
                   id: currentToolId,
                   name: currentToolName,
-                  arguments: currentToolArgs
+                  arguments: currentToolArgs,
+                  tool_type: 'function',
                 });
                 yield {
                   type: 'tool_call_end',
@@ -822,6 +883,10 @@ export class AnthropicAdapter implements ProviderAdapter {
                 ...usage,
                 output_tokens: u.output_tokens ?? usage.output_tokens,
                 total_tokens: usage.input_tokens + (u.output_tokens ?? usage.output_tokens),
+                raw: {
+                  ...(usage.raw && typeof usage.raw === 'object' ? usage.raw as Record<string, unknown> : {}),
+                  ...u,
+                },
               };
             }
             break;
@@ -835,7 +900,7 @@ export class AnthropicAdapter implements ProviderAdapter {
             }
             if (textActive) {
               textActive = false;
-              yield { type: 'text_end' };
+              yield { type: 'text_end', text_id: textId };
             }
             const responsePayload = new GenerateResponse({
               message: { role: 'assistant', content: parts },
@@ -851,6 +916,19 @@ export class AnthropicAdapter implements ProviderAdapter {
               message: responsePayload.message,
               response: responsePayload,
             };
+            break;
+          }
+          default: {
+            if (typeof eventType === 'string' && eventType.length > 0) {
+              yield {
+                type: 'provider_event',
+                provider: PROVIDER,
+                provider_event: {
+                  type: eventType,
+                  data: parsed,
+                },
+              };
+            }
             break;
           }
         }

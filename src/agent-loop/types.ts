@@ -3,6 +3,7 @@
 export type SessionState = 'IDLE' | 'PROCESSING' | 'AWAITING_INPUT' | 'CLOSED';
 
 export interface SessionConfig {
+  /** Session-lifetime turn limit (0 = unlimited). */
   max_turns: number;
   max_tool_rounds_per_input: number;
   default_command_timeout_ms: number;
@@ -17,8 +18,8 @@ export interface SessionConfig {
 }
 
 export const DEFAULT_SESSION_CONFIG: Omit<SessionConfig, 'workspace_root'> = {
-  max_turns: 12,
-  max_tool_rounds_per_input: 10,
+  max_turns: 0,
+  max_tool_rounds_per_input: 0,
   default_command_timeout_ms: 10_000,
   max_command_timeout_ms: 600_000,
   tool_output_limits: {},
@@ -27,6 +28,27 @@ export const DEFAULT_SESSION_CONFIG: Omit<SessionConfig, 'workspace_root'> = {
   loop_detection_window: 10,
   max_follow_ups: 10,
 };
+
+/**
+ * Session/tool loop limits use a shared semantic:
+ * - `0` means unlimited
+ * - positive integers are hard caps
+ */
+export function isUnlimitedLimit(limit: number): boolean {
+  return limit === 0;
+}
+
+export function hasFiniteLimit(limit: number): boolean {
+  return Number.isFinite(limit) && limit > 0;
+}
+
+export function isLimitReached(count: number, limit: number): boolean {
+  return hasFiniteLimit(limit) && count >= limit;
+}
+
+export function canContinueWithLimit(count: number, limit: number): boolean {
+  return isUnlimitedLimit(limit) || count < limit;
+}
 
 export interface WorkItem {
   prompt: string;
@@ -59,6 +81,7 @@ export interface ToolResultEnvelope {
   content: string;
   is_error: boolean;
   full_content?: string;
+  truncated?: boolean;
 }
 
 /** Per-tool default character limits for model-visible output */

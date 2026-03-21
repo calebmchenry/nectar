@@ -235,11 +235,23 @@ describe('HTTP pipeline server', () => {
 
     await waitForRunning(server.base_url, created.run_id);
 
+    const statusRes = await fetch(`${server.base_url}/pipelines/${created.run_id}`);
+    expect(statusRes.status).toBe(200);
+    const activeStatus = (await statusRes.json()) as { current_node?: string; status: string };
+    expect(activeStatus.status).toBe('running');
+    expect(activeStatus.current_node).toBeDefined();
+
     const contextRes = await fetch(`${server.base_url}/pipelines/${created.run_id}/context`);
     expect(contextRes.status).toBe(200);
     const activeContext = (await contextRes.json()) as { context: Record<string, string> };
     expect(typeof activeContext.context).toBe('object');
     expect(activeContext.context.current_node).toBeDefined();
+    expect(activeContext.context.current_node).toBe(activeStatus.current_node);
+
+    const graphRes = await fetch(`${server.base_url}/pipelines/${created.run_id}/graph`);
+    expect(graphRes.status).toBe(200);
+    const graphSvg = await graphRes.text();
+    expect(graphSvg).toContain('#FFF3C4');
 
     const cancelRes = await fetch(`${server.base_url}/pipelines/${created.run_id}/cancel`, {
       method: 'POST',

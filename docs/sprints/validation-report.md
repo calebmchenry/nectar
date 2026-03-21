@@ -1,108 +1,102 @@
-# Sprint 031 Validation Report
+# Sprint 035 Validation Report
 
 **Date:** 2026-03-21
-**Sprint:** 031 — SSE Lifecycle Fix & Full Compliance Closure
-**Validated by:** Independent validation run
-**Result:** FAIL — 6 tests failing across 6 test files; 2 DoD gates not met
+**Sprint:** 035 — Green Suite or Bust — Fix the Four, Close the Contracts
+**Validator:** automated
+
+---
 
 ## Build
 
-| Check | Result |
-|-------|--------|
-| `npm run build` | PASS — zero TypeScript errors |
+| Check | Result | Evidence |
+|-------|--------|----------|
+| `npm run build` succeeds with zero errors | **PASS** | Build completes cleanly, Hive assets embedded, tsc reports no errors |
 
 ## Tests
 
-| Check | Result |
-|-------|--------|
-| `npm test` | FAIL — 6 failed, 1124 passed (1130 total) |
+| Check | Result | Evidence |
+|-------|--------|----------|
+| `npm test` passes all tests — zero failures, zero timeouts | **FAIL** | 5 tests failed across 4 test files out of 1217 total |
+| No test timeout values increased to achieve green | **PASS** | Diff review shows no inflated timeout values in existing tests |
+| No tests `.skip`-ed, `.todo`-ed, or otherwise disabled | **PASS** | Zero `.skip()`, `.todo()`, or `.only()` markers found across all test files |
+| No existing tests regressed; test count ≥ pre-sprint count | **PASS** | 1217 total tests (pre-sprint: 1205); 7 new test files added |
+| 4 previously-failing tests all pass: fan-in-llm, hive-seedbed-flow, http-server, pipeline-events | **FAIL** | All 4 still fail (see detail below) |
 
-### Failing Tests
+### Failing Tests Detail
 
-| Test File | Test Name | Failure Mode |
-|-----------|-----------|--------------|
-| `test/server/pipeline-events.test.ts` | emits stage_failed and pipeline_failed while preserving run_error/node_completed | AssertionError: `run_error` event not present in event stream |
-| `test/integration/http-server.test.ts` | cancels active runs and returns interrupted status with checkpoint_id | AssertionError: `current_node` is undefined (expected defined) |
-| `test/integration/hive-run-flow.test.ts` | covers preview/save/run/question/cancel/resume/replay flow over HTTP | Test timed out in 5000ms (SSE stream hang) |
-| `test/integration/http-resume.test.ts` | cancels an active run and resumes it to completion | Test timed out in 5000ms (SSE stream hang) |
-| `test/integration/seed-run-linkage.test.ts` | tracks link -> run -> interrupt -> resume -> complete on filesystem | Test timed out in 5000ms (SSE stream hang) |
-| `test/server/gardens-draft.test.ts` | streams draft_start, content_delta, and draft_complete events | Test timed out in 5000ms (SSE stream hang) |
+1. **test/integration/fan-in-llm.test.ts** — "persists selected branch and rationale in context and artifacts": `expected 'failed' to be 'completed'` at line 93. Run ends in `failed` instead of `completed`.
+2. **test/integration/fan-in-llm.test.ts** — "allows downstream routing on context.fan_in_selected_status when prompted fan-in selects a failed branch": `expected 400 to be 202` at line 153. Garden validation rejects `fan-in-routing.dot` (HTTP 400 instead of 202).
+3. **test/integration/hive-seedbed-flow.test.ts** — "creates seed, uploads attachment, analyzes, synthesizes, and archives to honey": Hook timed out in 10000ms. `server.close()` does not terminate SSE connections promptly.
+4. **test/integration/http-server.test.ts** — "cancels active runs and returns interrupted status with checkpoint_id": `expected undefined to be defined` at line 242. `current_node` is still undefined during active run.
+5. **test/server/pipeline-events.test.ts** — "emits stage_failed and pipeline_failed while preserving run_error/node_completed": `expected array to include 'pipeline_failed'`. Terminal failure path does not emit `pipeline_failed`.
 
-### Failure Analysis
+## Phase 1: Green Suite (Hard Gate)
 
-The 6 failures are the **same SSE lifecycle bugs** identified in the sprint overview (Phases 1a/1b). SSE streams opened by test clients never receive a close signal, causing tests to hang until timeout. The `run_error` event emission and `current_node` in context endpoint are also unresolved.
+| Check | Result | Evidence |
+|-------|--------|----------|
+| Fan-in-llm test passes | **FAIL** | 2 failures — run ends `failed` instead of `completed`; routing test gets 400 from garden validation |
+| Hive-seedbed-flow shutdown test passes | **FAIL** | afterEach hook times out at 10s — `server.close()` not force-closing SSE connections |
+| Http-server current_node test passes | **FAIL** | `current_node` undefined during active run — event-based tracking not implemented |
+| Pipeline-events pipeline_failed test passes | **FAIL** | `pipeline_failed` not in event stream — terminal failure path still routes through `finishCompleted()` |
 
-Despite `createFiniteSseStream` infrastructure being in place in `src/server/sse.ts`, the runtime behavior still fails — the SSE routes are correctly wired to close on terminal events, but the underlying test scenarios are not reaching terminal events or the close signal is not propagating correctly.
+## Phase 2: Engine Outcome Contract
 
-## Definition of Done — Item-by-Item
+| Check | Result | Evidence |
+|-------|--------|----------|
+| A1: `NodeOutcome` has `notes` field; engine synthesizes fallback | **PASS** | `types.ts:18` has `notes?: string`; `engine.ts:1111-1125` `withSynthesizedOutcomeNotes()` provides fallback using error_message, exit_code, or generic note |
+| A2: `writeNodeStatus()` persists canonical spec-shaped fields; codergen no conflicting `status.json` | **PASS** | `engine.ts:1082-1109` writes all 10 canonical fields; codergen writes `agent-status.json` only |
+| A3: `condition="my_flag=true"` resolves via `context.my_flag` fallback; reserved roots take precedence | **PASS** | `conditions.ts:28` defines `RESERVED_ROOTS`; lines 195-201 implement context fallback; `conditions.test.ts` covers unqualified keys, dotted keys, reserved-root precedence |
+| A5: `CONFIRMATION` type handled in auto-approve and wait.human | **PASS** | `auto-approve.ts:5-16` returns affirmative for CONFIRMATION; `wait-human.ts:213-217` renders affirmative/decline guidance; `wait-human.test.ts:67` verifies |
 
-### FAILING Items
+## Phase 3: Agent Session Accounting and Provider Semantics
 
-| # | DoD Item | Status | Evidence |
-|---|----------|--------|----------|
-| 1 | `npm test` passes with 0 failures — no timeouts, no skips | **FAIL** | 6 tests fail (3 timeouts, 2 assertion errors, 1 hook timeout) |
-| 2 | No test timeout values were increased to achieve green | **N/A** | Suite is not green; cannot verify this was achieved cleanly |
-| 3 | `/pipelines/:id/events` SSE stream closes automatically after terminal event | **FAIL** | Code exists (`createFiniteSseStream`), but 4 integration tests still hang/timeout |
-| 4 | `/gardens/draft` SSE stream closes automatically after `draft_complete`/`draft_error` | **FAIL** | Code exists, but `gardens-draft.test.ts` times out |
-| 5 | `GET /pipelines/:id/context` returns `current_node` during active runs | **FAIL** | `http-server.test.ts` asserts `current_node` is defined but gets `undefined` |
-| 6 | `run_error` event emission (implicit from Phase 1b) | **FAIL** | `pipeline-events.test.ts` expects `run_error` in event stream but it's absent |
+| Check | Result | Evidence |
+|-------|--------|----------|
+| C1: `max_turns` counts across session lifetime; exhaustion emits `agent_turn_limit_reached` | **PASS** | `session.ts:70` `lifetimeTurnCount` incremented on every turn (line 480); never reset between inputs; `session.test.ts:128-159` verifies cross-input counting |
+| C4: `agent_session_completed` event emitted with correct counts | **PASS** | `session.ts:1290-1298` emits with `status`, `turn_count`, `tool_call_count`, `duration_ms`; `events.ts:111-119` defines interface |
+| C5: `agent_tool_call_completed` always includes `full_content` | **PASS** | `session.ts:973` sets `full_content: result.full_content ?? result.content` for normal calls; `session.ts:1193` sets `full_content: content` for subagent calls |
+| C6: `ContextLengthError` emits warning, fails work item, returns to `AWAITING_INPUT` | **PASS** | `session.ts:614-625` catches error, calls `emitContextLengthRecoveryWarning()`, returns failure result; session transitions to `AWAITING_INPUT` (not CLOSED); `session.test.ts:677-731` verifies |
+| L1: `StreamError` has `retryable: true`; retry only before content yielded | **PASS** | `errors.ts:122` sets `retryable: true`; `retry.ts:150-152` tracks `yieldedContent`; line 158 blocks retry after content |
+| L2: Anthropic adapter raises `ContentFilterError` for filtered responses | **PASS** | `anthropic.ts:471-483` `isContentFiltered()` detects safety/policy keywords; line 572 throws `ContentFilterError`; `anthropic.test.ts:486-491` verifies |
+| L6: `ProviderError` base has `retry_after_ms`; retry middleware consults generically | **PASS** | `errors.ts:5` defines `retry_after_ms?: number` on base `LLMError`; `retry.ts:75,129` reads from `lastError?.retry_after_ms`; `anthropic.test.ts:493-503` verifies |
 
-### PASSING Items
+## Phase 4: Compliance Report
 
-| # | DoD Item | Status | Evidence |
-|---|----------|--------|----------|
-| 7 | `npm run build` succeeds with zero TypeScript errors | **PASS** | Build completes cleanly |
-| 8 | `Answer` type includes `AnswerValue` enum, `selected_option`, `text` fields | **PASS** | `src/interviewer/types.ts` — enum at lines 20-25, fields at lines 32-34 |
-| 9 | All 5 interviewer implementations produce correctly-typed Answer objects | **PASS** | All use `normalizeAnswer()` which produces canonical Answer shape |
-| 10 | Legacy label-only inputs accepted and normalized at boundary | **PASS** | `normalizeAnswer()` infers `answer_value` from `selected_label` via `inferAnswerValueFromLabel()` |
-| 11 | `Cocoon` type includes `logs: string[]` field | **PASS** | `src/checkpoint/types.ts` line 30 |
-| 12 | Old checkpoints without `logs` load successfully (default `[]`) | **PASS** | `normalizeCocoon()` in `run-store.ts` defaults to `[]`; also in `cocoon.ts` |
-| 13 | `RunCompletedEvent` includes `artifact_count` | **PASS** | `src/engine/events.ts` line 60 |
-| 14 | `NodeStartedEvent` includes `index` | **PASS** | `src/engine/events.ts` line 15 |
-| 15 | `AgentSession` emits `agent_session_started` without codergen | **PASS** | `session.ts` line 169 calls `emitSessionStarted()` in `submit()` |
-| 16 | Exactly one session-start event per session | **PASS** | `sessionStartedEmitted` flag prevents duplicate emission |
-| 17 | `ProviderProfile` has `providerOptions()`, implemented by all 3 profiles | **PASS** | Interface line 15; Anthropic (66-72), OpenAI (87-89), Gemini (113-122) |
-| 18 | `ToolRegistry.unregister()` exists | **PASS** | `tool-registry.ts` lines 130-132 |
-| 19 | `LocalExecutionEnvironment.glob()` and `.grep()` return real results | **PASS** | Delegates to `runGlobSearch`/`runGrepSearch` from `search.ts` |
-| 20 | Existing glob/grep tools use shared helpers | **PASS** | Both tools import and call shared helpers from `search.ts` |
-| 21 | `submit()` auto-discovers project instructions (32KB budget) | **PASS** | `session.ts` calls `discoverInstructions()`; `project-instructions.ts` enforces `MAX_BUDGET = 32 * 1024` |
-| 22 | `buildGitSnapshot()` includes last 5 commit messages | **PASS** | `environment-context.ts` runs `git log --oneline -5` |
-| 23 | `stream_end` carries complete `GenerateResponse` (not optional) | **PASS** | `streaming.ts` line 18 — `response: GenerateResponse` (required) |
-| 24 | Premature stream termination emits `error`, not malformed `stream_end` | **PASS** | Anthropic adapter throws `StreamError`; client yields error event |
-| 25 | `Message` has optional `name` field | **PASS** | `types.ts` line 99 — `name?: string` |
-| 26 | `GenerateRequest` has `max_tool_rounds` (default 1) | **PASS** | `types.ts` line 232; `client.ts` `resolveMaxToolRounds()` defaults to 1 |
-| 27 | `GenerateOptions.maxIterations` remains as deprecated alias | **PASS** | `types.ts` line 237; used as fallback in `resolveMaxToolRounds()` |
-| 28 | `generate({ prompt, messages })` throws `InvalidRequestError` | **PASS** | `client.ts` `normalizePromptRequest()` lines 110-116 |
-| 29 | `provider_options.anthropic.auto_cache = false` disables caching | **PASS** | `anthropic.ts` `shouldEnablePromptCaching()` checks `auto_cache === false` |
-| 30 | Legacy `cache_control = false` still works | **PASS** | Same function checks `cache_control === false` as alias |
-| 31 | `ModelInfo` uses flat `supports_*` and cost fields | **PASS** | `catalog.ts` lines 3-35 define flat fields |
-| 32 | Nested `capabilities`/`cost` remain as compatibility aliases | **PASS** | `catalog.ts` includes nested structures alongside flat fields |
-| 33 | Internal callers migrated to spec-named flat fields | **PASS** | No external callers use deprecated nested paths |
-| 34 | Compliance report updated to show zero gaps | **PASS** | `docs/compliance-report.md` line 1: "NO GAPS REMAINING" |
+| Check | Result | Evidence |
+|-------|--------|----------|
+| Compliance report reflects actual shipped state with source evidence | **PASS** | All 11 sprint-035 gap closures documented with source file citations |
+| Stale entries corrected | **PASS** | Report condensed and updated; no stale claims found |
+| Remaining gaps documented as deliberate deferrals with justification | **PASS** | A4, C2, C3, C7, L3-L5, L7, L8 all documented with rationale |
+
+---
 
 ## Summary
 
 | Category | Pass | Fail | Total |
 |----------|------|------|-------|
 | Build | 1 | 0 | 1 |
-| Tests | 0 | 1 | 1 |
-| SSE Lifecycle (Phases 1a/1b) | 0 | 4 | 4 |
-| Attractor Spec Gaps (Phase 2) | 6 | 0 | 6 |
-| Agent Loop Gaps (Phase 3) | 10 | 0 | 10 |
-| Unified LLM Gaps (Phase 4) | 12 | 0 | 12 |
-| Compliance Report (Phase 5) | 1 | 0 | 1 |
-| **Total** | **30** | **5** | **35** |
+| Tests | 3 | 2 | 5 |
+| Phase 1: Green Suite | 0 | 4 | 4 |
+| Phase 2: Engine Outcome | 4 | 0 | 4 |
+| Phase 3: Session & Provider | 7 | 0 | 7 |
+| Phase 4: Compliance Report | 3 | 0 | 3 |
+| **Total** | **18** | **6** | **24** |
 
-## Verdict
+## VERDICT: FAIL
 
-**FAIL** — 5 of 35 DoD items are not satisfied.
+### Failures
 
-All failures stem from the SSE lifecycle workstream (Phases 1a/1b):
-1. SSE streams still hang in integration tests (4 tests timeout)
-2. `run_error` event not emitted by engine on node failure without failure edge
-3. `current_node` not populated in context endpoint during active runs
-4. Test suite is not green (6 failures)
+The **Phase 1 hard gate (green test suite) is not met.** All 4 previously-failing tests still fail:
 
-The compliance gap closure work (Phases 2–4) is **fully complete** — all 15 gaps are verified as implemented with correct code. The compliance report accurately reflects zero remaining gaps.
+1. **fan-in-llm** (2 test failures) — Fan-in handler still propagates branch failure status instead of returning success on selection. Additionally, the routing regression test's fixture `fan-in-routing.dot` fails garden validation.
+2. **hive-seedbed-flow** (1 failure) — `server.close()` still does not force-close SSE connections, causing afterEach hook timeout.
+3. **http-server** (1 failure) — `current_node` still undefined during active run; event-based node tracking not wired up.
+4. **pipeline-events** (1 failure) — `pipeline_failed` still not emitted when terminal node fails; `finishCompleted()` path unchanged.
 
-The remaining work is narrowly scoped to the SSE/HTTP integration layer: fixing event propagation so terminal events reach SSE clients, emitting `run_error`, and populating `current_node` in the context snapshot.
+### What Passed
+
+All Phase 2-4 compliance items pass (15/15). The code changes for A1, A2, A3, A5, C1, C4, C5, C6, L1, L2, and L6 are correctly implemented with test coverage. The compliance report is up-to-date with source evidence and deliberate deferrals documented.
+
+### Root Cause
+
+The sprint's own diagnosis holds: the 4 test failures have distinct, known root causes that were not fixed. The Phase 1 "fix first" strategy was not executed — compliance work (Phases 2-3) was completed while the blocking test fixes were not.

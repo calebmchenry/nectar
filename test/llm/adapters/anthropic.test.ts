@@ -2,11 +2,15 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import { AnthropicAdapter } from '../../../src/llm/adapters/anthropic.js';
 import {
   AuthenticationError,
+  ContentFilterError,
+  ContextLengthError,
   ContextWindowError,
   InvalidRequestError,
   OverloadedError,
   QuotaExceededError,
   RateLimitError,
+  RequestTimeoutError,
+  ServerError,
   StreamError,
 } from '../../../src/llm/errors.js';
 import type { StreamEvent } from '../../../src/llm/streaming.js';
@@ -47,6 +51,16 @@ function sseResponse(events: string[]) {
 }
 
 describe('AnthropicAdapter', () => {
+  describe('adapter capabilities', () => {
+    it('supports tool_choice auto/none/required/named', () => {
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      expect(adapter.supports_tool_choice('auto')).toBe(true);
+      expect(adapter.supports_tool_choice('none')).toBe(true);
+      expect(adapter.supports_tool_choice('required')).toBe(true);
+      expect(adapter.supports_tool_choice('named')).toBe(true);
+    });
+  });
+
   describe('generate', () => {
     it('sends correct request and translates response', async () => {
       const mockResponse = {
@@ -362,9 +376,60 @@ describe('AnthropicAdapter', () => {
       expect(result.usage.cache_write_tokens).toBe(10);
       expect(result.usage.cache_read_tokens).toBe(20);
     });
+
+    it('round-trips redacted_thinking.data without dropping opaque payload', async () => {
+      const opaqueRequestData = { encrypted_content: 'opaque-request-token' };
+      const opaqueResponseData = { encrypted_content: 'opaque-response-token' };
+      mockFetch({
+        id: 'msg_1',
+        type: 'message',
+        model: 'test',
+        content: [{ type: 'redacted_thinking', data: opaqueResponseData }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      const result = await adapter.generate({
+        messages: [
+          { role: 'assistant', content: [{ type: 'redacted_thinking', data: opaqueRequestData }] },
+          { role: 'user', content: 'Continue from previous turn' },
+        ],
+      });
+
+      const body = JSON.parse((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1].body);
+      expect(body.messages[0].content).toEqual([{ type: 'redacted_thinking', data: opaqueRequestData }]);
+      expect(result.message.content).toEqual([{ type: 'redacted_thinking', data: opaqueResponseData }]);
+    });
   });
 
   describe('error classification', () => {
+    it('408 → RequestTimeoutError', async () => {
+      mockFetch({}, { ok: false, status: 408 });
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
+        .rejects.toThrow(RequestTimeoutError);
+    });
+
+    it('413 → ContextLengthError', async () => {
+      mockFetch({}, { ok: false, status: 413 });
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
+        .rejects.toThrow(ContextLengthError);
+    });
+
+    it('422 → InvalidRequestError with status 422', async () => {
+      mockFetch({ error: { message: 'bad field' } }, { ok: false, status: 422 });
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      try {
+        await adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] });
+        expect.unreachable('expected InvalidRequestError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(InvalidRequestError);
+        expect((error as InvalidRequestError).status_code).toBe(422);
+      }
+    });
+
     it('401 → AuthenticationError', async () => {
       mockFetch({}, { ok: false, status: 401 });
       const adapter = new AnthropicAdapter('bad-key', 'https://test.api');
@@ -417,6 +482,25 @@ describe('AnthropicAdapter', () => {
       await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
         .rejects.toThrow(InvalidRequestError);
     });
+
+    it('400 safety/content-filter body → ContentFilterError', async () => {
+      mockFetch('blocked by safety policy', { ok: false, status: 400 });
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      await expect(adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] }))
+        .rejects.toThrow(ContentFilterError);
+    });
+
+    it('retry-after header is captured on retryable server errors', async () => {
+      mockFetch('server overloaded', { ok: false, status: 500, headers: { 'retry-after': '2' } });
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      try {
+        await adapter.generate({ messages: [{ role: 'user', content: 'Hi' }] });
+        expect.unreachable('expected ServerError');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ServerError);
+        expect((error as ServerError).retry_after_ms).toBe(2000);
+      }
+    });
   });
 
   describe('streaming', () => {
@@ -441,12 +525,43 @@ describe('AnthropicAdapter', () => {
       expect(events.some((e) => e.type === 'text_start')).toBe(true);
       expect(events.filter((e) => e.type === 'content_delta')).toHaveLength(2);
       expect(events.some((e) => e.type === 'text_end')).toBe(true);
+      const textStart = events.find((e): e is Extract<StreamEvent, { type: 'text_start' }> => e.type === 'text_start');
+      expect(textStart?.text_id).toBe('text_0');
+      const deltas = events.filter((e): e is Extract<StreamEvent, { type: 'content_delta' }> => e.type === 'content_delta');
+      expect(deltas.every((event) => event.text_id === 'text_0')).toBe(true);
+      const textEnd = events.find((e): e is Extract<StreamEvent, { type: 'text_end' }> => e.type === 'text_end');
+      expect(textEnd?.text_id).toBe('text_0');
       const end = events.find((e) => e.type === 'stream_end');
       expect(end).toBeDefined();
       if (end?.type === 'stream_end') {
         expect(end.stop_reason).toBe('end_turn');
         expect(end.response?.usage.total_tokens).toBe(12);
       }
+    });
+
+    it('emits provider_event for unknown provider stream events', async () => {
+      sseResponse([
+        'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":1,"output_tokens":0}}}',
+        'event: ping\ndata: {"type":"ping","heartbeat":true}',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        'event: message_stop\ndata: {"type":"message_stop"}',
+      ]);
+
+      const adapter = new AnthropicAdapter('key', 'https://test.api');
+      const events: StreamEvent[] = [];
+      for await (const event of adapter.stream({ messages: [{ role: 'user', content: 'Hi' }] })) {
+        events.push(event);
+      }
+
+      const providerEvent = events.find((event): event is Extract<StreamEvent, { type: 'provider_event' }> => event.type === 'provider_event');
+      expect(providerEvent).toEqual({
+        type: 'provider_event',
+        provider: 'anthropic',
+        provider_event: {
+          type: 'ping',
+          data: { type: 'ping', heartbeat: true },
+        },
+      });
     });
 
     it('emits thinking_start and thinking_end around thinking_delta', async () => {

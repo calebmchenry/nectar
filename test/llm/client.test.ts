@@ -2,12 +2,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { UnifiedClient } from '../../src/llm/client.js';
+import { UnifiedClient, generate as generateWithTools } from '../../src/llm/client.js';
 import { SimulationProvider } from '../../src/llm/simulation.js';
 import type { ProviderAdapter } from '../../src/llm/adapters/types.js';
 import type { ContentPart, GenerateRequest, GenerateResponse } from '../../src/llm/types.js';
 import type { StreamEvent } from '../../src/llm/streaming.js';
-import { InvalidRequestError } from '../../src/llm/errors.js';
+import { InvalidRequestError, UnsupportedToolChoiceError } from '../../src/llm/errors.js';
 import { resolveTimeout } from '../../src/llm/timeouts.js';
 
 const tempDirs: string[] = [];
@@ -27,6 +27,9 @@ function mockAdapter(name: string, response?: GenerateResponse): ProviderAdapter
 
   return {
     provider_name: name,
+    initialize: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+    supports_tool_choice: vi.fn().mockReturnValue(true),
     generate: vi.fn().mockResolvedValue(resp),
     async *stream(_req: GenerateRequest): AsyncIterable<StreamEvent> {
       yield { type: 'stream_start', model: resp.model };
@@ -92,6 +95,27 @@ describe('UnifiedClient', () => {
     ).rejects.toThrow(InvalidRequestError);
   });
 
+  it('rejects invalid tool names before provider request translation', async () => {
+    const anthropic = mockAdapter('anthropic');
+    const providers = new Map<string, ProviderAdapter>([
+      ['anthropic', anthropic],
+      ['simulation', new SimulationProvider()],
+    ]);
+    const client = new UnifiedClient(providers);
+
+    await expect(client.generateUnified({
+      ...dummyRequest,
+      tools: [
+        {
+          name: 'bad-name',
+          description: 'bad',
+          input_schema: { type: 'object' },
+        },
+      ],
+    })).rejects.toThrow(InvalidRequestError);
+    expect(anthropic.generate).not.toHaveBeenCalled();
+  });
+
   it('raises InvalidRequestError with clear message for unconfigured provider', async () => {
     const providers = new Map<string, ProviderAdapter>([['simulation', new SimulationProvider()]]);
     const client = new UnifiedClient(providers);
@@ -112,6 +136,123 @@ describe('UnifiedClient', () => {
     ]);
     const client = new UnifiedClient(providers);
     expect(client.available_providers()).toEqual(['anthropic', 'simulation']);
+  });
+
+  it('initializes adapters on first use and closes them via client.close()', async () => {
+    const initialize = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    const adapter: ProviderAdapter = {
+      provider_name: 'anthropic',
+      initialize,
+      close,
+      supports_tool_choice: () => true,
+      generate: vi.fn().mockResolvedValue({
+        message: { role: 'assistant', content: 'ok' },
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        finish_reason: { reason: 'stop', raw: 'stop' },
+        model: 'test-model',
+        provider: 'anthropic',
+      }),
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: 'stream_start', model: 'test-model' };
+        yield { type: 'stream_end', stop_reason: 'end_turn', message: { role: 'assistant', content: 'ok' } };
+      },
+    };
+    const client = new UnifiedClient(new Map([['anthropic', adapter], ['simulation', new SimulationProvider()]]));
+
+    await client.generateUnified({ provider: 'anthropic', messages: [{ role: 'user', content: 'Hi' }] });
+    await client.generateUnified({ provider: 'anthropic', messages: [{ role: 'user', content: 'Again' }] });
+    expect(initialize).toHaveBeenCalledTimes(1);
+
+    await client.close();
+    expect(close).toHaveBeenCalledTimes(1);
+
+    await client.generateUnified({ provider: 'anthropic', messages: [{ role: 'user', content: 'After close' }] });
+    expect(initialize).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects unsupported tool_choice modes before provider calls', async () => {
+    const adapter: ProviderAdapter = {
+      provider_name: 'gemini',
+      supports_tool_choice: (mode) => mode !== 'named',
+      generate: vi.fn().mockResolvedValue({
+        message: { role: 'assistant', content: 'ok' },
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        finish_reason: { reason: 'stop', raw: 'stop' },
+        model: 'test-model',
+        provider: 'gemini',
+      }),
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: 'stream_start', model: 'test-model' };
+        yield { type: 'stream_end', stop_reason: 'end_turn', message: { role: 'assistant', content: 'ok' } };
+      },
+    };
+    const client = new UnifiedClient(new Map([['gemini', adapter], ['simulation', new SimulationProvider()]]));
+
+    await expect(client.generateUnified({
+      provider: 'gemini',
+      messages: [{ role: 'user', content: 'Hi' }],
+      tool_choice: { type: 'named', name: 'read_file' },
+      tools: [{ name: 'read_file', description: 'Read a file', input_schema: { type: 'object' } }],
+    })).rejects.toBeInstanceOf(UnsupportedToolChoiceError);
+
+    expect(adapter.generate).not.toHaveBeenCalled();
+  });
+
+  it('threads timeout.per_step_ms through each tool-loop generation step', async () => {
+    const observedTimeouts: Array<GenerateRequest['timeout']> = [];
+    const adapter: ProviderAdapter = {
+      provider_name: 'openai',
+      supports_tool_choice: () => true,
+      generate: vi
+        .fn()
+        .mockImplementationOnce(async (request: GenerateRequest) => {
+          observedTimeouts.push(request.timeout);
+          return {
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_call', id: 'call_1', name: 'echo', arguments: '{}', tool_type: 'function' }],
+            },
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            finish_reason: { reason: 'tool_calls', raw: 'tool_calls' },
+            model: 'gpt-test',
+            provider: 'openai',
+          };
+        })
+        .mockImplementationOnce(async (request: GenerateRequest) => {
+          observedTimeouts.push(request.timeout);
+          return {
+            message: { role: 'assistant', content: 'done' },
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            finish_reason: { reason: 'stop', raw: 'stop' },
+            model: 'gpt-test',
+            provider: 'openai',
+          };
+        }),
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: 'stream_start', model: 'gpt-test' };
+        yield { type: 'stream_end', stop_reason: 'end_turn', message: { role: 'assistant', content: 'done' } };
+      },
+    };
+    const client = new UnifiedClient(new Map([['openai', adapter], ['simulation', new SimulationProvider()]]));
+
+    await generateWithTools({
+      provider: 'openai',
+      messages: [{ role: 'user', content: 'Use the tool then finish' }],
+      timeout: { request_ms: 5_000, per_step_ms: 123 },
+      tools: [{
+        name: 'echo',
+        description: 'Echo',
+        input_schema: { type: 'object' },
+        execute: async () => 'ok',
+      }],
+    }, { client });
+
+    expect(observedTimeouts).toHaveLength(2);
+    for (const timeout of observedTimeouts) {
+      expect(typeof timeout).toBe('object');
+      expect(timeout).toMatchObject({ request_ms: 123, per_step_ms: 123 });
+    }
   });
 
   it('stream() returns AsyncIterable<StreamEvent> with content deltas', async () => {

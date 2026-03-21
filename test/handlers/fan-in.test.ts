@@ -89,7 +89,7 @@ describe('FanInHandler', () => {
     expect(outcome.context_updates!['parallel.fan_in.best_id']).toBe('a_branch');
   });
 
-  it('returns failure when all branches failed', async () => {
+  it('returns success even when all branches failed so downstream edges can decide routing', async () => {
     const results = serializeParallelResults({
       branches: [
         { branchId: 'a', status: 'failure', contextSnapshot: {}, durationMs: 100 },
@@ -107,8 +107,9 @@ describe('FanInHandler', () => {
       context: { 'parallel.results': results }
     });
 
-    expect(outcome.status).toBe('failure');
+    expect(outcome.status).toBe('success');
     expect(outcome.context_updates!['parallel.fan_in.best_id']).toBe('a');
+    expect(outcome.context_updates!['fan_in_selected_status']).toBe('failure');
   });
 
   it('returns failure when no parallel results in context', async () => {
@@ -171,11 +172,45 @@ describe('FanInHandler', () => {
       expect(outcome.status).toBe('success');
       expect(outcome.context_updates?.['parallel.fan_in.best_id']).toBe('branch_a');
       expect(outcome.context_updates?.['parallel.fan_in.rationale']).toBeDefined();
+      expect(outcome.context_updates?.['fan_in_selected_branch']).toBe('branch_a');
+      expect(outcome.context_updates?.['fan_in_selected_status']).toBe('success');
 
       const requestArtifact = await readFile(path.join(runDir, 'fan_in', 'fan-in-evaluation.request.json'), 'utf8');
       const responseArtifact = await readFile(path.join(runDir, 'fan_in', 'fan-in-evaluation.response.json'), 'utf8');
       expect(requestArtifact).toContain('production readiness');
       expect(responseArtifact).toContain('selected_branch_id');
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prompted path returns success when the selected branch failed', async () => {
+    const providers = new Map();
+    providers.set('simulation', new SimulationProvider());
+    const handler = new FanInHandler(new UnifiedClient(providers));
+
+    const results = serializeParallelResults({
+      branches: [
+        { branchId: 'branch_a', status: 'failure', contextSnapshot: { 'plan.response': 'Plan A' }, durationMs: 120 },
+        { branchId: 'branch_b', status: 'success', contextSnapshot: { 'plan.response': 'Plan B' }, durationMs: 180 }
+      ],
+      joinPolicy: 'wait_all'
+    });
+
+    const runDir = await mkdtemp(path.join(os.tmpdir(), 'nectar-fan-in-failed-selection-'));
+    try {
+      const outcome = await handler.execute({
+        node: makeFanInNode('Pick one branch.'),
+        run_id: 'test',
+        dot_file: '<test>',
+        attempt: 1,
+        run_dir: runDir,
+        context: { 'parallel.results': results }
+      });
+
+      expect(outcome.status).toBe('success');
+      expect(outcome.context_updates?.['parallel.fan_in.best_id']).toBe('branch_a');
+      expect(outcome.context_updates?.['fan_in_selected_status']).toBe('failure');
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }

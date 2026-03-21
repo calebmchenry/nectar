@@ -9,18 +9,18 @@ import type { ModelInfo } from '../../src/llm/catalog.js';
 import { InvalidRequestError } from '../../src/llm/errors.js';
 
 describe('getModelInfo', () => {
-  it('finds claude-sonnet-4-20250514 by exact ID', () => {
-    const info = getModelInfo('claude-sonnet-4-20250514');
+  it('finds claude-sonnet-4-6-20260115 by exact ID', () => {
+    const info = getModelInfo('claude-sonnet-4-6-20260115');
     expect(info).toBeDefined();
-    expect(info!.id).toBe('claude-sonnet-4-20250514');
+    expect(info!.id).toBe('claude-sonnet-4-6-20260115');
     expect(info!.provider).toBe('anthropic');
-    expect(info!.display_name).toBe('Claude Sonnet 4');
+    expect(info!.display_name).toBe('Claude Sonnet 4.6');
   });
 
   it('finds by alias: sonnet-4', () => {
     const info = getModelInfo('sonnet-4');
     expect(info).toBeDefined();
-    expect(info!.id).toBe('claude-sonnet-4-20250514');
+    expect(info!.id).toBe('claude-sonnet-4-6-20260115');
   });
 
   it('returns undefined for nonexistent model', () => {
@@ -28,21 +28,21 @@ describe('getModelInfo', () => {
   });
 
   it('narrows by provider', () => {
-    const info = getModelInfo('claude-sonnet-4-20250514', 'anthropic');
+    const info = getModelInfo('claude-sonnet-4-6-20260115', 'anthropic');
     expect(info).toBeDefined();
 
-    const wrong = getModelInfo('claude-sonnet-4-20250514', 'openai');
+    const wrong = getModelInfo('claude-sonnet-4-6-20260115', 'openai');
     expect(wrong).toBeUndefined();
   });
 
-  it('finds gpt-4o by exact ID', () => {
-    const info = getModelInfo('gpt-4o');
+  it('finds gpt-5.2 by exact ID', () => {
+    const info = getModelInfo('gpt-5.2');
     expect(info).toBeDefined();
     expect(info!.provider).toBe('openai');
   });
 
-  it('finds gemini-2.5-flash by exact ID', () => {
-    const info = getModelInfo('gemini-2.5-flash');
+  it('finds gemini-3-flash by exact ID', () => {
+    const info = getModelInfo('gemini-3-flash');
     expect(info).toBeDefined();
     expect(info!.provider).toBe('gemini');
   });
@@ -101,17 +101,17 @@ describe('getLatestModel', () => {
 describe('resolveModelSelector', () => {
   it('resolves default for anthropic', () => {
     const id = resolveModelSelector('anthropic', 'default');
-    expect(id).toBe('claude-sonnet-4-20250514');
+    expect(id).toBe('claude-sonnet-4-6-20260115');
   });
 
   it('resolves fast for openai', () => {
     const id = resolveModelSelector('openai', 'fast');
-    expect(id).toBe('gpt-4.1-mini');
+    expect(id).toBe('gpt-5.2-mini');
   });
 
   it('resolves reasoning for gemini', () => {
     const id = resolveModelSelector('gemini', 'reasoning');
-    expect(id).toBe('gemini-2.5-pro');
+    expect(id).toBe('gemini-3-pro');
   });
 
   it('throws InvalidRequestError for bogus selector', () => {
@@ -124,6 +124,14 @@ describe('resolveModelSelector', () => {
 });
 
 describe('catalog data integrity', () => {
+  it('includes GPT-5.2, Claude 4.6, and Gemini 3.x families (U3)', () => {
+    expect(getModelInfo('gpt-5.2')).toBeDefined();
+    expect(getModelInfo('claude-sonnet-4-6-20260115')).toBeDefined();
+    expect(getModelInfo('claude-opus-4-6-20260115')).toBeDefined();
+    expect(getModelInfo('gemini-3-flash')).toBeDefined();
+    expect(getModelInfo('gemini-3-pro')).toBeDefined();
+  });
+
   it('every catalog entry has all required fields', () => {
     const models = listModels();
     for (const m of models) {

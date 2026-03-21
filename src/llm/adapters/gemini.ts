@@ -1,4 +1,4 @@
-import type { ProviderAdapter } from './types.js';
+import type { ProviderAdapter, ToolChoiceMode } from './types.js';
 import {
   GenerateResponse,
   normalizeContent,
@@ -17,6 +17,7 @@ import {
   AbortError,
   AccessDeniedError,
   AuthenticationError,
+  ContextLengthError,
   ContextWindowError,
   InvalidRequestError,
   LLMError,
@@ -24,6 +25,7 @@ import {
   OverloadedError,
   QuotaExceededError,
   RateLimitError,
+  RequestTimeoutError,
   ServerError,
   StreamError,
   TimeoutError,
@@ -40,7 +42,7 @@ import {
 
 const PROVIDER = 'gemini';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com';
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3-flash';
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -348,6 +350,7 @@ function translateUnifiedFinishReason(reason: string, hasToolCall: boolean): Fin
     case 'MAX_TOKENS':
       return { reason: 'length', raw: reason };
     case 'SAFETY':
+    case 'RECITATION':
       return { reason: 'content_filter', raw: reason };
     case 'ERROR':
       return { reason: 'error', raw: reason };
@@ -370,7 +373,8 @@ function extractParts(geminiParts: GeminiPart[]): ContentPart[] {
         type: 'tool_call',
         id: callId,
         name: gp.functionCall.name,
-        arguments: JSON.stringify(gp.functionCall.args ?? {})
+        arguments: JSON.stringify(gp.functionCall.args ?? {}),
+        tool_type: 'function',
       });
     }
   }
@@ -380,8 +384,15 @@ function extractParts(geminiParts: GeminiPart[]): ContentPart[] {
 async function classifyError(response: Response): Promise<never> {
   const body = await response.text().catch(() => '');
   const metadata = parseProviderErrorMetadata(body);
+  const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
 
   switch (response.status) {
+    case 408:
+      throw withErrorMetadata(new RequestTimeoutError(PROVIDER, `Gemini request timeout: ${body}`), metadata);
+    case 413:
+      throw withErrorMetadata(new ContextLengthError(PROVIDER, `Gemini context length exceeded: ${body}`), metadata);
+    case 422:
+      throw withErrorMetadata(new InvalidRequestError(PROVIDER, `Gemini invalid request: ${body}`, undefined, 422), metadata);
     case 401:
       throw withErrorMetadata(new AuthenticationError(PROVIDER, `Gemini authentication failed: ${body}`), metadata);
     case 403:
@@ -393,14 +404,16 @@ async function classifyError(response: Response): Promise<never> {
           metadata,
         );
       }
-      const retryAfter = parseRetryAfterMs(response.headers.get('retry-after'));
       throw withErrorMetadata(
         new RateLimitError(PROVIDER, { retry_after_ms: retryAfter, message: `Gemini rate limit: ${body}` }),
         metadata,
       );
     }
     case 503:
-      throw withErrorMetadata(new OverloadedError(PROVIDER, `Gemini overloaded: ${body}`), metadata);
+      throw withErrorMetadata(
+        new OverloadedError(PROVIDER, { message: `Gemini overloaded: ${body}`, retry_after_ms: retryAfter }),
+        metadata,
+      );
     case 400:
       if (isContextWindowError(body)) {
         throw withErrorMetadata(new ContextWindowError(PROVIDER, `Gemini context window exceeded: ${body}`), metadata);
@@ -410,7 +423,10 @@ async function classifyError(response: Response): Promise<never> {
     case 502:
     case 504:
       throw withErrorMetadata(
-        new ServerError(PROVIDER, { status_code: response.status, message: `Gemini HTTP ${response.status}: ${body}` }),
+        new ServerError(
+          PROVIDER,
+          { status_code: response.status, retry_after_ms: retryAfter, message: `Gemini HTTP ${response.status}: ${body}` }
+        ),
         metadata,
       );
     default:
@@ -426,6 +442,18 @@ export class GeminiAdapter implements ProviderAdapter {
   constructor(apiKey: string, baseUrl?: string) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl ?? process.env['GEMINI_BASE_URL'] ?? DEFAULT_BASE_URL;
+  }
+
+  async initialize(): Promise<void> {
+    // Stateless adapter; no initialization required.
+  }
+
+  async close(): Promise<void> {
+    // Stateless adapter; no cleanup required.
+  }
+
+  supports_tool_choice(mode: ToolChoiceMode): boolean {
+    return mode === 'auto' || mode === 'none' || mode === 'required';
   }
 
   private modelUrl(model: string, method: string, stream = false): string {
@@ -488,7 +516,8 @@ export class GeminiAdapter implements ProviderAdapter {
       output_tokens: usageMeta?.candidatesTokenCount ?? 0,
       total_tokens: (usageMeta?.promptTokenCount ?? 0) + (usageMeta?.candidatesTokenCount ?? 0),
       reasoning_tokens: usageMeta?.thoughtsTokenCount,
-      cache_read_tokens: usageMeta?.cachedContentTokenCount
+      cache_read_tokens: usageMeta?.cachedContentTokenCount,
+      raw: usageMeta,
     };
 
     const rate_limit = parseRateLimitHeaders(response.headers);
@@ -556,6 +585,7 @@ export class GeminiAdapter implements ProviderAdapter {
     let thinkingActive = false;
     let toolCallCounter = 0;
     let textActive = false;
+    const textId = 'text_0';
 
     try {
       for await (const sse of parseSSEStream(response, {
@@ -599,11 +629,11 @@ export class GeminiAdapter implements ProviderAdapter {
                 }
                 if (!textActive) {
                   textActive = true;
-                  yield { type: 'text_start' };
+                  yield { type: 'text_start', text_id: textId };
                 }
                 partialText += gp.text;
                 allParts.push({ type: 'text', text: gp.text });
-                yield { type: 'content_delta', text: gp.text };
+                yield { type: 'content_delta', text: gp.text, text_id: textId };
               } else if (gp.functionCall) {
                 if (thinkingActive) {
                   thinkingActive = false;
@@ -611,7 +641,7 @@ export class GeminiAdapter implements ProviderAdapter {
                 }
                 if (textActive) {
                   textActive = false;
-                  yield { type: 'text_end' };
+                  yield { type: 'text_end', text_id: textId };
                 }
                 const callId = `call_${toolCallCounter++}`;
                 const serializedArgs = JSON.stringify(gp.functionCall.args ?? {});
@@ -619,7 +649,8 @@ export class GeminiAdapter implements ProviderAdapter {
                   type: 'tool_call',
                   id: callId,
                   name: gp.functionCall.name,
-                  arguments: serializedArgs
+                  arguments: serializedArgs,
+                  tool_type: 'function',
                 };
                 allParts.push(tc);
                 yield { type: 'tool_call_start', id: callId, name: gp.functionCall.name };
@@ -644,8 +675,23 @@ export class GeminiAdapter implements ProviderAdapter {
             output_tokens: usageMeta.candidatesTokenCount ?? 0,
             total_tokens: (usageMeta.promptTokenCount ?? 0) + (usageMeta.candidatesTokenCount ?? 0),
             reasoning_tokens: usageMeta.thoughtsTokenCount,
-            cache_read_tokens: usageMeta.cachedContentTokenCount
+            cache_read_tokens: usageMeta.cachedContentTokenCount,
+            raw: usageMeta,
           };
+        }
+
+        if (!candidate && typeof (sse.event ?? parsed.type) === 'string') {
+          const providerType = (sse.event ?? parsed.type) as string;
+          if (providerType.length > 0) {
+            yield {
+              type: 'provider_event',
+              provider: PROVIDER,
+              provider_event: {
+                type: providerType,
+                data: parsed,
+              },
+            };
+          }
         }
       }
 
@@ -667,7 +713,7 @@ export class GeminiAdapter implements ProviderAdapter {
       }
       if (textActive) {
         textActive = false;
-        yield { type: 'text_end' };
+        yield { type: 'text_end', text_id: textId };
       }
 
       const responsePayload = new GenerateResponse({

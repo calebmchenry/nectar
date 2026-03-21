@@ -198,6 +198,10 @@ export class RunManager {
       current_node: cocoon.current_node,
       completed_nodes: cocoon.completed_nodes.map((node) => node.node_id),
     });
+    await entry.question_store.close({
+      disposition: 'interrupted',
+      reason: 'Run resumed; stale pending questions were archived.',
+    });
 
     entry.completion = this.pipelineService
       .resumePipeline({
@@ -271,6 +275,11 @@ export class RunManager {
       entry.engine.abort('api_cancel');
     }
 
+    await entry.question_store.close({
+      disposition: 'interrupted',
+      reason: 'Run cancelled via API.',
+    });
+
     try {
       await entry.completion;
     } catch {
@@ -290,7 +299,20 @@ export class RunManager {
   async getStatus(runId: string): Promise<PipelineStatusResponse | null> {
     const active = this.activeRuns.get(runId);
     if (active) {
-      return toStatusResponse(active);
+      const checkpoint = await RunStore.readCocoon(runId, this.workspaceRoot);
+      const completedNodes = mergeCompletedNodeIds(checkpoint?.completed_nodes, active.completed_nodes);
+      const currentNode = resolveCurrentNode(active, checkpoint?.current_node);
+      const base = toStatusResponse(active);
+      const updatedAt = latestIsoTimestamp(base.updated_at, checkpoint?.updated_at);
+
+      return {
+        ...base,
+        updated_at: updatedAt,
+        current_node: currentNode,
+        completed_nodes: completedNodes,
+        completed_count: completedNodes.length,
+        interruption_reason: active.interruption_reason ?? checkpoint?.interruption_reason,
+      };
     }
 
     const cocoon = await RunStore.readCocoon(runId, this.workspaceRoot);
@@ -308,11 +330,10 @@ export class RunManager {
   async getContext(runId: string): Promise<Record<string, string> | null> {
     const active = this.activeRuns.get(runId);
     if (active) {
-      if (active.engine) {
-        return withLiveCurrentNode(active.engine.getContextSnapshot(), active.current_node);
-      }
       const inFlightCheckpoint = await RunStore.readCocoon(runId, this.workspaceRoot);
-      return withLiveCurrentNode(inFlightCheckpoint?.context ?? {}, active.current_node);
+      const liveContext = active.engine?.getContextSnapshot();
+      const baseContext = liveContext ?? inFlightCheckpoint?.context ?? {};
+      return withLiveCurrentNode(baseContext, resolveCurrentNode(active, inFlightCheckpoint?.current_node));
     }
 
     const cocoon = await RunStore.readCocoon(runId, this.workspaceRoot);
@@ -323,6 +344,16 @@ export class RunManager {
   }
 
   async getGraphExecutionState(runId: string): Promise<{ status: RunStatus; current_node?: string; completed_nodes: CompletedNodeState[] } | null> {
+    const active = this.activeRuns.get(runId);
+    if (active) {
+      const inFlightCheckpoint = await RunStore.readCocoon(runId, this.workspaceRoot);
+      return {
+        status: active.status,
+        current_node: resolveCurrentNode(active, inFlightCheckpoint?.current_node),
+        completed_nodes: mergeCompletedNodeStates(inFlightCheckpoint?.completed_nodes, active.completed_nodes),
+      };
+    }
+
     const cocoon = await RunStore.readCocoon(runId, this.workspaceRoot);
     if (cocoon) {
       return {
@@ -331,24 +362,7 @@ export class RunManager {
         completed_nodes: cocoon.completed_nodes,
       };
     }
-
-    const active = this.activeRuns.get(runId);
-    if (!active) {
-      return null;
-    }
-
-    const now = new Date().toISOString();
-    return {
-      status: active.status,
-      current_node: active.current_node,
-      completed_nodes: active.completed_nodes.map((nodeId) => ({
-        node_id: nodeId,
-        status: 'success',
-        started_at: now,
-        completed_at: now,
-        retries: 0,
-      })),
-    };
+    return null;
   }
 
   async getPendingQuestions(runId: string): Promise<StoredQuestion[]> {
@@ -378,7 +392,7 @@ export class RunManager {
       if (message.includes('not found')) {
         throw new PipelineNotFoundError(message);
       }
-      if (message.includes('already') || message.includes('no active waiter')) {
+      if (message.includes('already') || message.includes('no active waiter') || message.includes('not currently awaiting')) {
         throw new PipelineConflictError(message);
       }
       throw error;
@@ -484,7 +498,10 @@ export class RunManager {
       await Promise.allSettled([
         entry.event_chain,
         entry.journal.flush(),
-        entry.question_store.close('Server shutting down'),
+        entry.question_store.close({
+          disposition: 'interrupted',
+          reason: `Run manager shutdown (${reason}).`,
+        }),
       ]);
       if (entry.cleanup_timer) {
         clearTimeout(entry.cleanup_timer);
@@ -575,7 +592,10 @@ export class RunManager {
     entry.updated_at = new Date().toISOString();
     entry.interruption_reason = result.interruption_reason;
     entry.current_node = undefined;
-    await entry.question_store.close('Run completed');
+    await entry.question_store.close({
+      disposition: result.status === 'interrupted' ? 'interrupted' : 'timed_out',
+      reason: `Run finished with status '${result.status}'.`,
+    });
     this.scheduleCleanup(entry);
   }
 
@@ -585,7 +605,10 @@ export class RunManager {
     entry.status = 'failed';
     entry.lifecycle = 'terminal';
     entry.updated_at = new Date().toISOString();
-    await entry.question_store.close('Run failed');
+    await entry.question_store.close({
+      disposition: 'timed_out',
+      reason: 'Run failed.',
+    });
     this.scheduleCleanup(entry);
   }
 
@@ -669,16 +692,25 @@ function applyEventToEntry(entry: ActiveRunEntry, envelope: EventEnvelope): void
     if (!entry.completed_nodes.includes(event.node_id)) {
       entry.completed_nodes.push(event.node_id);
     }
+    if (entry.current_node === event.node_id) {
+      entry.current_node = undefined;
+    }
     return;
   }
   if (event.type === 'run_completed') {
+    entry.status = 'completed';
+    entry.current_node = undefined;
     return;
   }
   if (event.type === 'run_interrupted') {
+    entry.status = 'interrupted';
     entry.interruption_reason = event.reason;
+    entry.current_node = undefined;
     return;
   }
   if (event.type === 'run_error') {
+    entry.status = 'failed';
+    entry.current_node = undefined;
     return;
   }
 }
@@ -724,11 +756,78 @@ function withLiveCurrentNode(
   context: Record<string, string>,
   currentNode: string | undefined,
 ): Record<string, string> {
-  if (!currentNode || context.current_node) {
+  if (!currentNode) {
+    return context;
+  }
+  if (context.current_node) {
     return context;
   }
   return {
     ...context,
     current_node: currentNode,
   };
+}
+
+function resolveCurrentNode(entry: ActiveRunEntry, checkpointCurrentNode: string | undefined): string | undefined {
+  const fromEngine = normalizeCurrentNode(entry.engine?.getContextSnapshot().current_node);
+  if (fromEngine) {
+    return fromEngine;
+  }
+  const fromCheckpoint = normalizeCurrentNode(checkpointCurrentNode);
+  if (fromCheckpoint) {
+    return fromCheckpoint;
+  }
+  return normalizeCurrentNode(entry.current_node);
+}
+
+function normalizeCurrentNode(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function mergeCompletedNodeStates(
+  checkpointNodes: CompletedNodeState[] | undefined,
+  entryNodeIds: string[],
+): CompletedNodeState[] {
+  const merged: CompletedNodeState[] = [];
+  const seen = new Set<string>();
+
+  for (const checkpointNode of checkpointNodes ?? []) {
+    merged.push(checkpointNode);
+    seen.add(checkpointNode.node_id);
+  }
+
+  const now = new Date().toISOString();
+  for (const nodeId of entryNodeIds) {
+    if (seen.has(nodeId)) {
+      continue;
+    }
+    merged.push({
+      node_id: nodeId,
+      status: 'success',
+      started_at: now,
+      completed_at: now,
+      retries: 0,
+    });
+    seen.add(nodeId);
+  }
+
+  return merged;
+}
+
+function mergeCompletedNodeIds(
+  checkpointNodes: CompletedNodeState[] | undefined,
+  entryNodeIds: string[],
+): string[] {
+  return mergeCompletedNodeStates(checkpointNodes, entryNodeIds).map((node) => node.node_id);
+}
+
+function latestIsoTimestamp(primary: string, secondary?: string): string {
+  if (!secondary) {
+    return primary;
+  }
+  return secondary > primary ? secondary : primary;
 }

@@ -1,7 +1,6 @@
 import { access, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { RunStore } from '../../checkpoint/run-store.js';
-import type { RunEvent } from '../../engine/events.js';
 import type { RunStatus } from '../../engine/types.js';
 import { SeedActivityStore } from '../../seedbed/activity.js';
 import { SeedLifecycleService } from '../../seedbed/lifecycle.js';
@@ -23,6 +22,7 @@ import { synthesizeAnalyses } from '../../seedbed/synthesis.js';
 import { SWARM_PROVIDERS } from '../../runtime/swarm-analysis-service.js';
 import type { SwarmManager } from '../swarm-manager.js';
 import type { RunManager } from '../run-manager.js';
+import { SeedRunBridge } from '../seed-run-bridge.js';
 import type { SwarmProvider, WorkspaceEventBus } from '../workspace-event-bus.js';
 import { HttpError, Router } from '../router.js';
 
@@ -43,7 +43,14 @@ export function registerSeedRoutes(router: Router, options: SeedRoutesOptions): 
   const runManager = options.run_manager;
   const swarmManager = options.swarm_manager;
   const eventBus = options.event_bus;
-  const trackedSeedRuns = new Map<string, () => void>();
+  const seedRunBridge = runManager
+    ? new SeedRunBridge({
+        run_manager: runManager,
+        lifecycle,
+        seed_store: store,
+        event_bus: eventBus,
+      })
+    : undefined;
 
   router.register('GET', '/seeds', async (ctx) => {
     const listed = await store.list();
@@ -319,16 +326,11 @@ export function registerSeedRoutes(router: Router, options: SeedRoutesOptions): 
       launchOrigin,
       resumed ? 'resume' : 'start',
     );
-    trackSeedRunLifecycle({
-      runManager,
-      trackedSeedRuns,
-      seedId,
-      runId,
-      gardenPath: selectedGarden,
-      launchOrigin,
-      lifecycle,
-      eventBus,
-      seedMeta: updated,
+    await seedRunBridge?.attach({
+      seed_id: seedId,
+      run_id: runId,
+      garden_path: selectedGarden,
+      launch_origin: launchOrigin,
     });
 
     eventBus?.emit({
@@ -663,103 +665,6 @@ function normalizeRunStatus(status: RunStatus | undefined): LinkedRunSummary['st
     return status;
   }
   return 'unknown';
-}
-
-function trackSeedRunLifecycle(params: {
-  runManager: RunManager;
-  trackedSeedRuns: Map<string, () => void>;
-  seedId: number;
-  runId: string;
-  gardenPath: string;
-  launchOrigin: RunLaunchOrigin;
-  lifecycle: SeedLifecycleService;
-  eventBus?: WorkspaceEventBus;
-  seedMeta: { id: number; status: string; priority: string };
-}): void {
-  if (params.trackedSeedRuns.has(params.runId)) {
-    return;
-  }
-
-  const unsubscribe = params.runManager.subscribe(params.runId, (envelope) => {
-    void handleTrackedSeedRunEvent(params, envelope.event);
-  });
-  if (!unsubscribe) {
-    return;
-  }
-
-  params.trackedSeedRuns.set(params.runId, unsubscribe);
-}
-
-async function handleTrackedSeedRunEvent(
-  params: {
-    trackedSeedRuns: Map<string, () => void>;
-    seedId: number;
-    runId: string;
-    gardenPath: string;
-    launchOrigin: RunLaunchOrigin;
-    lifecycle: SeedLifecycleService;
-    eventBus?: WorkspaceEventBus;
-    seedMeta: { id: number; status: string; priority: string };
-  },
-  event: RunEvent,
-): Promise<void> {
-  if (event.type === 'run_interrupted') {
-    await params.lifecycle.recordRunTransition(params.seedId, {
-      run_id: params.runId,
-      transition: 'run_interrupted',
-      reason: event.reason,
-      garden: params.gardenPath,
-      launch_origin: params.launchOrigin,
-    });
-    closeTrackedRun(params.trackedSeedRuns, params.runId);
-    params.eventBus?.emit({
-      type: 'seed_updated',
-      seed_id: params.seedMeta.id,
-      status: params.seedMeta.status,
-      priority: params.seedMeta.priority,
-    });
-    return;
-  }
-
-  if (event.type === 'run_completed') {
-    await params.lifecycle.recordRunTransition(params.seedId, {
-      run_id: params.runId,
-      transition: 'run_completed',
-      garden: params.gardenPath,
-      launch_origin: params.launchOrigin,
-    });
-    closeTrackedRun(params.trackedSeedRuns, params.runId);
-    params.eventBus?.emit({
-      type: 'seed_updated',
-      seed_id: params.seedMeta.id,
-      status: params.seedMeta.status,
-      priority: params.seedMeta.priority,
-    });
-    return;
-  }
-
-  if (event.type === 'run_error') {
-    await params.lifecycle.recordRunTransition(params.seedId, {
-      run_id: params.runId,
-      transition: 'run_failed',
-      message: event.message,
-      garden: params.gardenPath,
-      launch_origin: params.launchOrigin,
-    });
-    closeTrackedRun(params.trackedSeedRuns, params.runId);
-    params.eventBus?.emit({
-      type: 'seed_updated',
-      seed_id: params.seedMeta.id,
-      status: params.seedMeta.status,
-      priority: params.seedMeta.priority,
-    });
-  }
-}
-
-function closeTrackedRun(trackedSeedRuns: Map<string, () => void>, runId: string): void {
-  const unsubscribe = trackedSeedRuns.get(runId);
-  unsubscribe?.();
-  trackedSeedRuns.delete(runId);
 }
 
 async function listFilenames(dirPath: string): Promise<string[]> {

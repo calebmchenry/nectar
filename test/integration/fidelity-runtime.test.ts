@@ -202,12 +202,16 @@ describe('fidelity runtime integration', () => {
       run_id: 'status-test',
     });
     await engine.run();
+    expect(engine.getContextSnapshot()['steps.tool1.notes']).toBeTruthy();
 
     const statusPath = path.join(ws, '.nectar', 'cocoons', 'status-test', 'tool1', 'status.json');
     const raw = await readFile(statusPath, 'utf8');
     const statusData = JSON.parse(raw);
     expect(statusData.node_id).toBe('tool1');
-    expect(statusData.status).toBe('success');
+    expect(statusData.outcome).toBe('success');
+    expect(statusData.suggested_next_ids).toBeDefined();
+    expect(statusData.context_updates).toBeDefined();
+    expect(typeof statusData.notes).toBe('string');
   });
 
   it('preamble deterministic for same input', () => {

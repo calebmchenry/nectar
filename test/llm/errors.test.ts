@@ -9,7 +9,9 @@ import {
   ContextWindowError,
   ContentFilterError,
   ConfigurationError,
+  ContextLengthError,
   NetworkError,
+  RequestTimeoutError,
   StreamError,
   TimeoutError,
   parseRetryAfterMs
@@ -66,17 +68,30 @@ describe('LLMError hierarchy', () => {
     expect(err.status_code).toBeUndefined();
   });
 
-  it('TimeoutError is retryable', () => {
+  it('TimeoutError is not retryable', () => {
     const err = new TimeoutError('gemini');
-    expect(err.retryable).toBe(true);
+    expect(err.retryable).toBe(false);
+    expect(err.status_code).toBe(408);
   });
 
-  it('StreamError is not retryable and carries optional metadata', () => {
+  it('RequestTimeoutError is non-retryable with status 408', () => {
+    const err = new RequestTimeoutError('openai');
+    expect(err.retryable).toBe(false);
+    expect(err.status_code).toBe(408);
+  });
+
+  it('ContextLengthError is non-retryable with status 413', () => {
+    const err = new ContextLengthError('anthropic');
+    expect(err.retryable).toBe(false);
+    expect(err.status_code).toBe(413);
+  });
+
+  it('StreamError is retryable and carries optional metadata', () => {
     const err = new StreamError('anthropic', {
       partial_content: 'hello',
       phase: 'idle_timeout',
     });
-    expect(err.retryable).toBe(false);
+    expect(err.retryable).toBe(true);
     expect(err.partial_content).toBe('hello');
     expect(err.phase).toBe('idle_timeout');
   });
@@ -109,9 +124,11 @@ describe('LLMError hierarchy', () => {
       provider: 'openai',
       retryable: false,
       status_code: 400,
+      retry_after_ms: 2000,
       error_code: 'context_length_exceeded',
       raw: { error: { code: 'context_length_exceeded' } },
     });
+    expect(err.retry_after_ms).toBe(2000);
     expect(err.error_code).toBe('context_length_exceeded');
     expect(err.raw).toEqual({ error: { code: 'context_length_exceeded' } });
   });

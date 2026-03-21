@@ -55,6 +55,7 @@ export interface ToolCallContentPart {
   id: string;
   name: string;
   arguments: string;
+  tool_type?: 'function' | 'custom';
 }
 
 export interface ToolResultContentPart {
@@ -62,6 +63,23 @@ export interface ToolResultContentPart {
   tool_call_id: string;
   content: string;
   is_error?: boolean;
+  image_data?: string;
+  image_media_type?: string;
+}
+
+export interface ToolCallData {
+  id: string;
+  name: string;
+  arguments: string;
+  type: 'function' | 'custom';
+}
+
+export interface ToolResultData {
+  tool_call_id: string;
+  content: string;
+  is_error?: boolean;
+  image_data?: string;
+  image_media_type?: string;
 }
 
 export interface ThinkingContentPart {
@@ -72,6 +90,7 @@ export interface ThinkingContentPart {
 
 export interface RedactedThinkingContentPart {
   type: 'redacted_thinking';
+  data?: unknown;
 }
 
 export type ContentPart =
@@ -98,6 +117,8 @@ export interface Message {
   role: Role;
   content: string | ContentPart[];
   name?: string;
+  tool_call_id?: string;
+  readonly text?: string;
 }
 
 const MESSAGE_NAME_ALLOWED_RE = /[A-Za-z0-9_-]/g;
@@ -116,28 +137,50 @@ export function sanitizeMessageName(name?: string): string | undefined {
 
 export namespace Message {
   export function system(content: string | ContentPart[]): Message {
-    return { role: 'system', content };
+    return withMessageAccessors({ role: 'system', content });
   }
 
   export function user(content: string | ContentPart[]): Message {
-    return { role: 'user', content };
+    return withMessageAccessors({ role: 'user', content });
   }
 
   export function assistant(content: string | ContentPart[]): Message {
-    return { role: 'assistant', content };
+    return withMessageAccessors({ role: 'assistant', content });
   }
 
   export function tool_result(tool_call_id: string, content: string, is_error = false, name?: string): Message {
     const sanitizedName = sanitizeMessageName(name);
-    const message: Message = {
+    const message = withMessageAccessors({
       role: 'tool',
+      tool_call_id,
       content: [{ type: 'tool_result', tool_call_id, content, is_error }],
-    };
+    });
     if (sanitizedName) {
       message.name = sanitizedName;
     }
     return message;
   }
+}
+
+export function withMessageAccessors(message: Message): Message {
+  if (!Object.getOwnPropertyDescriptor(message, 'text')) {
+    Object.defineProperty(message, 'text', {
+      get() {
+        return getTextContent(message.content);
+      },
+      enumerable: false,
+      configurable: true,
+    });
+  }
+
+  if (message.tool_call_id === undefined && Array.isArray(message.content)) {
+    const toolResult = message.content.find((part): part is ToolResultContentPart => part.type === 'tool_result');
+    if (toolResult) {
+      message.tool_call_id = toolResult.tool_call_id;
+    }
+  }
+
+  return message;
 }
 
 export interface Usage {
@@ -147,6 +190,7 @@ export interface Usage {
   reasoning_tokens?: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
+  raw?: unknown;
 }
 
 export function toUsage(usage: Omit<Usage, 'total_tokens'> & { total_tokens?: number }): Usage {
@@ -206,6 +250,8 @@ export interface TimeoutConfig {
   request_ms?: number;
   /** Maximum interval between stream chunks in milliseconds. */
   stream_read_ms?: number;
+  /** Per LLM step timeout in multi-step tool loops. */
+  per_step_ms?: number;
 }
 
 export interface GenerateRequest {
@@ -230,6 +276,7 @@ export interface GenerateRequest {
   response_format?: ResponseFormat;
   stop_when?: StopCondition;
   max_tool_rounds?: number;
+  max_retries?: number;
 }
 
 export interface GenerateOptions {
@@ -341,7 +388,7 @@ export class GenerateResponse {
   readonly rate_limit?: RateLimitInfo;
 
   constructor(init: GenerateResponseInit) {
-    this.message = init.message;
+    this.message = withMessageAccessors(init.message);
     this.usage = toUsage(init.usage);
     this.finish_reason = normalizeFinishReason(init.finish_reason ?? init.stop_reason);
     this.model = init.model;
@@ -472,6 +519,15 @@ export function getTextContent(content: string | ContentPart[]): string {
     .filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text')
     .map((p) => p.text)
     .join('');
+}
+
+export function resolveToolCallData(part: ToolCallContentPart): ToolCallData {
+  return {
+    id: part.id,
+    name: part.name,
+    arguments: part.arguments,
+    type: part.tool_type ?? 'function',
+  };
 }
 
 // Legacy compat — these types are used by old call sites.

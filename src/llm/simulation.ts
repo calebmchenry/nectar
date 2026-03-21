@@ -1,4 +1,4 @@
-import type { ProviderAdapter } from './adapters/types.js';
+import type { ProviderAdapter, ToolChoiceMode } from './adapters/types.js';
 import { GenerateResponse } from './types.js';
 import type { ContentPart, GenerateRequest, LLMClient, LLMRequest, LLMResponse } from './types.js';
 import type { StreamEvent } from './streaming.js';
@@ -45,6 +45,18 @@ function generateMinimalObject(schema: Record<string, unknown>): unknown {
 
 export class SimulationProvider implements ProviderAdapter, LLMClient {
   readonly provider_name = PROVIDER;
+
+  async initialize(): Promise<void> {
+    // No resources to initialize for simulation mode.
+  }
+
+  async close(): Promise<void> {
+    // No resources to close for simulation mode.
+  }
+
+  supports_tool_choice(_mode: ToolChoiceMode): boolean {
+    return true;
+  }
 
   // Legacy LLMClient interface
   async generate(request: LLMRequest | GenerateRequest): Promise<LLMResponse & GenerateResponse> {
@@ -131,15 +143,16 @@ export class SimulationProvider implements ProviderAdapter, LLMClient {
           .map((p) => ('text' in p ? p.text : ''))
           .join('');
 
+    const textId = 'text_0';
     yield { type: 'stream_start', model: result.model };
-    yield { type: 'text_start' };
+    yield { type: 'text_start', text_id: textId };
 
     // Yield text in chunks to simulate streaming
     const chunkSize = 20;
     for (let i = 0; i < text.length; i += chunkSize) {
-      yield { type: 'content_delta', text: text.slice(i, i + chunkSize) };
+      yield { type: 'content_delta', text: text.slice(i, i + chunkSize), text_id: textId };
     }
-    yield { type: 'text_end' };
+    yield { type: 'text_end', text_id: textId };
 
     yield { type: 'usage', usage: result.usage };
     yield {

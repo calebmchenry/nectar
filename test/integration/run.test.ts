@@ -148,9 +148,9 @@ describe('integration run', () => {
       const result = await engine.run();
       expect(result.status).toBe('completed');
 
-      // Verify we took the reject path (reject_exit), not the deploy path
+      // Verify we took the reject path, not the deploy path
       const completedIds = result.completed_nodes.map((n) => n.node_id);
-      expect(completedIds).toContain('reject_exit');
+      expect(completedIds).toContain('reject');
       expect(completedIds).not.toContain('deploy');
 
       // Verify human_question and human_answer events were emitted
@@ -280,7 +280,7 @@ describe('integration run', () => {
 
       // In non-TTY, ConsoleInterviewer should auto-select "skip" (the default_choice)
       const completedIds = result.completed_nodes.map((n) => n.node_id);
-      expect(completedIds).toContain('skip_exit');
+      expect(completedIds).toContain('skip');
     } finally {
       process.chdir(originalCwd);
     }
