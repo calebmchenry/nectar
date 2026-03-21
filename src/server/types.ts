@@ -97,11 +97,9 @@ export const DRAFT_TERMINAL_EVENT_TYPES: ReadonlySet<DraftTerminalEventType> = n
 export type PipelineTerminalEventType =
   | 'run_completed'
   | 'pipeline_failed'
-  | 'run_interrupted'
-  | 'run_error';
+  | 'run_interrupted';
 export const PIPELINE_TERMINAL_EVENT_TYPES: ReadonlySet<PipelineTerminalEventType> = new Set([
   'run_completed',
   'pipeline_failed',
   'run_interrupted',
-  'run_error',
 ]);

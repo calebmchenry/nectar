@@ -709,6 +709,14 @@ function applyEventToEntry(entry: ActiveRunEntry, envelope: EventEnvelope): void
     return;
   }
   if (event.type === 'run_error') {
+    // Don't set entry.status here — pipeline_failed follows immediately
+    // and failEntry() sets the final status after the event chain settles.
+    // Setting status early causes a race: polling clients see 'failed'
+    // before pipeline_failed is journaled.
+    entry.current_node = undefined;
+    return;
+  }
+  if (event.type === 'pipeline_failed') {
     entry.status = 'failed';
     entry.current_node = undefined;
     return;
