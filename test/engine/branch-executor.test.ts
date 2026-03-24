@@ -50,6 +50,20 @@ function makeEdge(source: string, target: string, attrs: Partial<GardenEdge> = {
   return { source, target, weight: 0, attributes: {}, ...attrs };
 }
 
+class RecordingToolHandler implements NodeHandler {
+  readonly executed: string[] = [];
+  private readonly outcomes: Record<string, NodeOutcome>;
+
+  constructor(outcomes: Record<string, NodeOutcome>) {
+    this.outcomes = outcomes;
+  }
+
+  async execute(input: HandlerExecutionInput): Promise<NodeOutcome> {
+    this.executed.push(input.node.id);
+    return this.outcomes[input.node.id] ?? { status: 'success' };
+  }
+}
+
 describe('BranchExecutor', () => {
   it('executes a single-node branch', async () => {
     const nodeA = makeNode('a', 'tool');
@@ -180,5 +194,71 @@ describe('BranchExecutor', () => {
     // Parent context should be unchanged
     expect(parentContext.get('current_node')).toBeUndefined();
     expect(parentContext.get('parent_key')).toBe('parent_value');
+  });
+
+  it('stops branch execution when predecessor fails and no failure route exists', async () => {
+    const nodeA = makeNode('a', 'tool');
+    const nodeB = makeNode('b', 'tool');
+    const graph = makeGraph([nodeA, nodeB], [makeEdge('a', 'b')]);
+
+    const context = new ExecutionContext();
+    const handlers = new HandlerRegistry(new SimulationProvider(), new AutoApproveInterviewer());
+    const recordingHandler = new RecordingToolHandler({
+      a: { status: 'failure', error_message: 'boom' },
+      b: { status: 'success' },
+    });
+    handlers.register('tool', recordingHandler);
+
+    const executor = new BranchExecutor({
+      graph,
+      context,
+      handlers,
+      branchStartNodeId: 'a',
+      terminationNodeIds: new Set(),
+      runId: 'test-run',
+      dotFile: '<test>',
+      runDir: '/tmp/test-branch',
+    });
+
+    const result = await executor.execute();
+    expect(result.status).toBe('failure');
+    expect(recordingHandler.executed).toEqual(['a']);
+  });
+
+  it('routes to failure edge when predecessor fails', async () => {
+    const nodeA = makeNode('a', 'tool');
+    const nodeB = makeNode('b', 'tool');
+    const nodeFailure = makeNode('on_failure', 'tool');
+    const graph = makeGraph(
+      [nodeA, nodeB, nodeFailure],
+      [
+        makeEdge('a', 'b'),
+        makeEdge('a', 'on_failure', { condition: 'outcome=failure' }),
+      ],
+    );
+
+    const context = new ExecutionContext();
+    const handlers = new HandlerRegistry(new SimulationProvider(), new AutoApproveInterviewer());
+    const recordingHandler = new RecordingToolHandler({
+      a: { status: 'failure', error_message: 'boom' },
+      b: { status: 'success' },
+      on_failure: { status: 'success' },
+    });
+    handlers.register('tool', recordingHandler);
+
+    const executor = new BranchExecutor({
+      graph,
+      context,
+      handlers,
+      branchStartNodeId: 'a',
+      terminationNodeIds: new Set(),
+      runId: 'test-run',
+      dotFile: '<test>',
+      runDir: '/tmp/test-branch',
+    });
+
+    const result = await executor.execute();
+    expect(result.status).toBe('success');
+    expect(recordingHandler.executed).toEqual(['a', 'on_failure']);
   });
 });

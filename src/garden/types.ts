@@ -64,6 +64,7 @@ export interface GardenNode {
   threadId?: string;
   toolCommand?: string;
   toolCommandFromScript?: boolean;
+  assertExists?: string[];
   managerPollIntervalMs?: number;
   managerMaxCycles?: number;
   managerStopCondition?: string;

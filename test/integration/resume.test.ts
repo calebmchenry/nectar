@@ -153,6 +153,7 @@ describe('integration resume', () => {
 
       expect(process.exitCode).toBe(1);
       expect(mismatchCapture.stderr()).toContain('Graph hash mismatch');
+      expect(mismatchCapture.stderr()).toContain(`nectar resume ${runId} --force`);
 
       process.exitCode = 0;
       await createProgram().parseAsync(['resume', runId ?? '', '--force'], { from: 'user' });

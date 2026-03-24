@@ -67,6 +67,8 @@ export class BranchExecutor {
     let status: BranchResult['status'] = 'success';
     if (result.error) {
       status = 'failure';
+    } else if (result.lastOutcome) {
+      status = result.lastOutcome.status;
     } else if (result.completedNodes.length === 0) {
       status = 'success'; // Empty branch (start == termination) succeeds trivially
     } else {

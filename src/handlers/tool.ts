@@ -1,3 +1,6 @@
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
+import path from 'node:path';
 import { HandlerExecutionInput, NodeOutcome } from '../engine/types.js';
 import { runScript } from '../process/run-script.js';
 import { NodeHandler } from './registry.js';
@@ -19,6 +22,7 @@ export class ToolHandler implements NodeHandler {
     }
 
     const timeoutMs = input.node.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const workspaceRoot = input.workspace_root ?? process.cwd();
     const env = {
       NECTAR_RUN_ID: input.run_id,
       NECTAR_NODE_ID: input.node.id,
@@ -33,11 +37,16 @@ export class ToolHandler implements NodeHandler {
     const result = await runScript({
       script,
       timeout_ms: timeoutMs,
+      cwd: workspaceRoot,
       env,
       abort_signal: input.abort_signal
     });
 
-    const success = result.exit_code === 0 && !result.timed_out;
+    const baseSuccess = result.exit_code === 0 && !result.timed_out;
+    const assertionFailure = baseSuccess
+      ? await evaluateAssertions(input.node.assertExists, workspaceRoot)
+      : undefined;
+    const success = baseSuccess && !assertionFailure;
     const contextUpdates: Record<string, string> = {};
     if (result.stdout.trim().length > 0) {
       contextUpdates['tool.output'] = result.stdout.slice(0, 500);
@@ -55,11 +64,56 @@ export class ToolHandler implements NodeHandler {
       stdout: result.stdout,
       stderr: result.stderr,
       timed_out: result.timed_out,
-      error_message: result.timed_out ? `Command timed out after ${timeoutMs}ms.` : undefined,
-      error_category: !success ? classifyToolErrorCategory(result.stderr, result.timed_out) : undefined,
+      error_message: result.timed_out
+        ? `Command timed out after ${timeoutMs}ms.`
+        : assertionFailure,
+      error_category: !success && !assertionFailure
+        ? classifyToolErrorCategory(result.stderr, result.timed_out)
+        : undefined,
       context_updates: Object.keys(contextUpdates).length > 0 ? contextUpdates : undefined,
     };
   }
+}
+
+async function evaluateAssertions(assertions: string[] | undefined, workspaceRoot: string): Promise<string | undefined> {
+  if (!assertions || assertions.length === 0) {
+    return undefined;
+  }
+
+  const normalizedWorkspaceRoot = path.resolve(workspaceRoot);
+  const missingPaths: string[] = [];
+  const escapedPaths: string[] = [];
+
+  for (const assertionPath of assertions) {
+    const resolvedPath = path.resolve(normalizedWorkspaceRoot, assertionPath);
+    if (!isWithinWorkspace(normalizedWorkspaceRoot, resolvedPath)) {
+      escapedPaths.push(assertionPath);
+      continue;
+    }
+
+    try {
+      await access(resolvedPath, constants.F_OK);
+    } catch {
+      missingPaths.push(assertionPath);
+    }
+  }
+
+  const messages: string[] = [];
+  for (const escapedPath of escapedPaths) {
+    messages.push(`Assertion failed: expected file '${escapedPath}' escapes the workspace root.`);
+  }
+  for (const missingPath of missingPaths) {
+    messages.push(`Assertion failed: expected file '${missingPath}' does not exist after tool_command completed.`);
+  }
+
+  return messages.length > 0 ? messages.join('\n') : undefined;
+}
+
+function isWithinWorkspace(workspaceRoot: string, targetPath: string): boolean {
+  if (targetPath === workspaceRoot) {
+    return true;
+  }
+  return targetPath.startsWith(`${workspaceRoot}${path.sep}`);
 }
 
 function classifyToolErrorCategory(stderr: string, timedOut: boolean): NodeOutcome['error_category'] {

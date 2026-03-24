@@ -8,12 +8,13 @@ function conditionalNode(overrides: Partial<GardenNode> = {}): GardenNode {
     kind: 'conditional',
     shape: 'diamond',
     attributes: overrides.attributes ?? {},
-    label: overrides.label
+    label: overrides.label,
+    prompt: overrides.prompt,
   };
 }
 
 describe('ConditionalHandler', () => {
-  it('returns success as a pass-through', async () => {
+  it('returns success as a pass-through without prompt', async () => {
     const handler = new ConditionalHandler();
     const outcome = await handler.execute({
       node: conditionalNode(),
@@ -25,6 +26,24 @@ describe('ConditionalHandler', () => {
     });
 
     expect(outcome.status).toBe('success');
+  });
+
+  it('fails fast when prompt is present', async () => {
+    const handler = new ConditionalHandler();
+    const outcome = await handler.execute({
+      node: conditionalNode({
+        prompt: 'Should we proceed?',
+        attributes: { prompt: 'Should we proceed?' },
+      }),
+      run_id: 'test-run',
+      dot_file: 'test.dot',
+      attempt: 1,
+      run_dir: '/tmp/test',
+      context: {},
+    });
+
+    expect(outcome.status).toBe('failure');
+    expect(outcome.error_message).toContain('Conditional nodes do not support prompt evaluation');
   });
 
   it('does not produce context updates', async () => {

@@ -49,7 +49,7 @@ digraph QuickStart {
   ]
 
   start [shape=Mdiamond, label="Start"]
-  hello [shape=parallelogram, label="Say Hello", script="echo 'Hello from Nectar'"]
+  hello [shape=parallelogram, label="Say Hello", tool_command="echo 'Hello from Nectar'"]
   done [shape=Msquare, label="Done"]
 
   start -> hello
@@ -72,6 +72,14 @@ Example output:
 ✅ sweet success
 🍯 Garden pollinated!
 ```
+
+## Choosing Node Shapes
+
+- `shape=box`: LLM/agent node. Use `prompt=...` (and optionally `llm_provider`, `llm_model`, or `model`).
+- `shape=parallelogram`: command node. Use `tool_command=...` (optionally `assert_exists=...`).
+- `shape=diamond`: conditional router. Use edge `condition=...` for routing; do not use `prompt` on diamonds.
+
+See [Garden Authoring Guide](docs/garden-authoring.md) for detailed authoring patterns and troubleshooting.
 
 ## Self-Update
 

@@ -7,8 +7,8 @@ import { SimulationProvider } from '../../src/llm/simulation.js';
 import { UnifiedClient } from '../../src/llm/client.js';
 import { GardenNode } from '../../src/garden/types.js';
 import type { RunEvent } from '../../src/engine/events.js';
-import type { LLMClient, LLMRequest, LLMResponse } from '../../src/llm/types.js';
-import type { ProviderAdapter } from '../../src/llm/adapters/types.js';
+import type { GenerateRequest, GenerateResponse, LLMClient, LLMRequest, LLMResponse } from '../../src/llm/types.js';
+import type { ProviderAdapter, ToolChoiceMode } from '../../src/llm/adapters/types.js';
 import { selectProfile } from '../../src/agent-loop/provider-profiles.js';
 import { ScriptedAdapter } from '../helpers/scripted-adapter.js';
 
@@ -35,6 +35,30 @@ function codergenNode(overrides: Partial<GardenNode> = {}): GardenNode {
     prompt: 'prompt' in overrides ? overrides.prompt : 'Write a hello world program',
     label: overrides.label
   };
+}
+
+class CapturingAdapter implements ProviderAdapter {
+  readonly provider_name = 'simulation';
+  readonly capturedRequests: GenerateRequest[] = [];
+  private readonly delegate: ScriptedAdapter;
+
+  constructor(turns: ConstructorParameters<typeof ScriptedAdapter>[0]) {
+    this.delegate = new ScriptedAdapter(turns);
+  }
+
+  supports_tool_choice(_mode: ToolChoiceMode): boolean {
+    return true;
+  }
+
+  async generate(request: GenerateRequest): Promise<GenerateResponse> {
+    this.capturedRequests.push(request);
+    return this.delegate.generate(request);
+  }
+
+  async *stream(request: GenerateRequest) {
+    this.capturedRequests.push(request);
+    yield* this.delegate.stream(request);
+  }
 }
 
 describe('CodergenHandler', () => {
@@ -139,17 +163,22 @@ describe('CodergenHandler', () => {
   describe('with UnifiedClient', () => {
     it('streams response and writes artifacts incrementally', async () => {
       const runDir = await createTempDir();
-      const sim = new SimulationProvider();
-      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', sim]]));
+      const workspace = await createTempDir();
+      const adapter = new ScriptedAdapter([
+        { tool_calls: [{ id: 'tc1', name: 'write_file', arguments: { path: 'created-by-agent.txt', content: 'hello' } }] },
+        { text: 'Done.' },
+      ]);
+      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
       const handler = new CodergenHandler(client);
 
       const outcome = await handler.execute({
-        node: codergenNode(),
+        node: codergenNode({ attributes: { llm_provider: 'simulation' } }),
         run_id: 'test-run',
         dot_file: 'test.dot',
         attempt: 1,
         run_dir: runDir,
-        context: {}
+        context: {},
+        workspace_root: workspace,
       });
 
       expect(outcome.status).toBe('success');
@@ -160,17 +189,58 @@ describe('CodergenHandler', () => {
 
       const nodeDir = path.join(runDir, 'llm_node');
       const response = await readFile(path.join(nodeDir, 'response.md'), 'utf8');
-      expect(response).toContain('Simulated response');
+      expect(response).toContain('Done.');
 
       const status = JSON.parse(await readFile(path.join(nodeDir, 'agent-status.json'), 'utf8'));
       expect(status.status).toBe('success');
       expect(status.usage).toBeDefined();
+
+      const written = await readFile(path.join(workspace, 'created-by-agent.txt'), 'utf8');
+      expect(written).toBe('hello');
+    });
+
+    it('sends tool definitions to the model and executes tool calls', async () => {
+      const runDir = await createTempDir();
+      const workspace = await createTempDir();
+      const adapter = new CapturingAdapter([
+        { tool_calls: [{ id: 'tc1', name: 'write_file', arguments: { path: 'plan.md', content: 'plan text' } }] },
+        { text: 'Wrote plan.' },
+      ]);
+      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+      const handler = new CodergenHandler(client);
+
+      const outcome = await handler.execute({
+        node: codergenNode({
+          attributes: { llm_provider: 'simulation' }
+        }),
+        run_id: 'test-run',
+        dot_file: 'test.dot',
+        attempt: 1,
+        run_dir: runDir,
+        context: {},
+        workspace_root: workspace,
+      });
+
+      expect(outcome.status).toBe('success');
+      expect(adapter.capturedRequests.length).toBeGreaterThan(0);
+      const firstRequest = adapter.capturedRequests[0];
+      const toolNames = (firstRequest?.tools ?? []).map((tool) => tool.name);
+      expect(toolNames).toContain('read_file');
+      expect(toolNames).toContain('write_file');
+      expect(toolNames).toContain('shell');
+
+      const createdFile = await readFile(path.join(workspace, 'plan.md'), 'utf8');
+      expect(createdFile).toBe('plan text');
     });
 
     it('reads llm_provider and llm_model from node attributes', async () => {
       const runDir = await createTempDir();
-      const sim = new SimulationProvider();
-      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', sim]]));
+      const workspace = await createTempDir();
+      const adapter = new ScriptedAdapter([
+        { tool_calls: [{ id: 'tc1', name: 'write_file', arguments: { path: 'model-check.txt', content: 'ok' } }] },
+        { text: 'done' },
+      ]);
+      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
       const handler = new CodergenHandler(client);
 
       const outcome = await handler.execute({
@@ -181,16 +251,24 @@ describe('CodergenHandler', () => {
         dot_file: 'test.dot',
         attempt: 1,
         run_dir: runDir,
-        context: {}
+        context: {},
+        workspace_root: workspace,
       });
 
       expect(outcome.status).toBe('success');
+      const status = JSON.parse(await readFile(path.join(runDir, 'llm_node', 'agent-status.json'), 'utf8'));
+      expect(status.provider).toBe('simulation');
+      expect(status.model).toBe('custom-model');
     });
 
     it('does not mutate shared profile when node sets llm_model', async () => {
       const runDir = await createTempDir();
-      const sim = new SimulationProvider();
-      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', sim]]));
+      const workspace = await createTempDir();
+      const adapter = new ScriptedAdapter([
+        { tool_calls: [{ id: 'tc1', name: 'write_file', arguments: { path: 'profile.txt', content: 'ok' } }] },
+        { text: 'done' },
+      ]);
+      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
 
       // Record original default model
       const profileBefore = selectProfile('simulation');
@@ -205,12 +283,65 @@ describe('CodergenHandler', () => {
         dot_file: 'test.dot',
         attempt: 1,
         run_dir: runDir,
-        context: {}
+        context: {},
+        workspace_root: workspace,
       });
 
       // The shared profile must not have been mutated
       const profileAfter = selectProfile('simulation');
       expect(profileAfter.defaultModel).toBe(originalModel);
+    });
+
+    it('diagnostic: SimulationProvider returns zero tool calls and fails with surfaced text', async () => {
+      const runDir = await createTempDir();
+      const sim = new SimulationProvider();
+      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', sim]]));
+      const handler = new CodergenHandler(client);
+
+      const outcome = await handler.execute({
+        node: codergenNode({
+          attributes: { llm_provider: 'simulation' },
+          prompt: 'Read the repo and write docs/plan.md',
+        }),
+        run_id: 'diag-simulation',
+        dot_file: 'test.dot',
+        attempt: 1,
+        run_dir: runDir,
+        context: {},
+      });
+
+      expect(outcome.status).toBe('failure');
+      expect(outcome.notes).toContain('Agent produced no tool calls');
+      expect(outcome.notes).toContain('Simulated response');
+    });
+
+    it('fails when the agent makes zero tool calls and surfaces response text', async () => {
+      const runDir = await createTempDir();
+      const adapter = new ScriptedAdapter([
+        { text: 'I do not have access to the file system tools.' },
+      ]);
+      const client = new UnifiedClient(new Map<string, ProviderAdapter>([['simulation', adapter]]));
+      const handler = new CodergenHandler(client);
+
+      const outcome = await handler.execute({
+        node: codergenNode({
+          attributes: { llm_provider: 'simulation' },
+          prompt: 'Read the repo and write docs/plan.md',
+        }),
+        run_id: 'run-zero-tool',
+        dot_file: 'test.dot',
+        attempt: 1,
+        run_dir: runDir,
+        context: {},
+      });
+
+      expect(outcome.status).toBe('failure');
+      expect(outcome.notes).toContain('Agent produced no tool calls');
+      expect(outcome.notes).toContain('I do not have access to the file system tools.');
+      expect(outcome.context_updates?.['llm_node.response']).toContain('I do not have access');
+
+      const responseArtifact = await readFile(path.join(runDir, 'llm_node', 'response.md'), 'utf8');
+      expect(responseArtifact).toContain('I do not have access');
     });
 
     it('bridges additive agent events into run events', async () => {

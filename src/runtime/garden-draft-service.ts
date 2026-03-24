@@ -262,7 +262,7 @@ function looksLikeDot(text: string): boolean {
 
 function buildSimulationDot(prompt: string): string {
   const label = prompt.replace(/"/g, "'").replace(/\s+/g, ' ').trim().slice(0, 120) || 'Drafted pipeline';
-  return `digraph Drafted {\n  graph [label="${label}"]\n\n  start [shape=Mdiamond, label="Start"]\n  plan [shape=box, label="Plan", prompt="Create a concise implementation plan."]\n  implement [shape=parallelogram, label="Implement", script="echo Implementing plan"]\n  test [shape=parallelogram, label="Test", script="echo Running tests"]\n  done [shape=Msquare, label="Done"]\n\n  start -> plan\n  plan -> implement\n  implement -> test\n  test -> done\n}\n`;
+  return `digraph Drafted {\n  graph [label="${label}"]\n\n  start [shape=Mdiamond, label="Start"]\n  plan [shape=box, label="Plan", prompt="Create a concise implementation plan."]\n  implement [shape=parallelogram, label="Implement", tool_command="echo Implementing plan"]\n  test [shape=parallelogram, label="Test", tool_command="echo Running tests"]\n  done [shape=Msquare, label="Done"]\n\n  start -> plan\n  plan -> implement\n  implement -> test\n  test -> done\n}\n`;
 }
 
 function chunkText(value: string, chunkSize: number): string[] {

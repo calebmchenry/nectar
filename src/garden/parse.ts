@@ -157,7 +157,10 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
       const humanDefaultChoice = mergedAttributes['human.default_choice']?.trim() || undefined;
       const joinPolicy = mergedAttributes.join_policy?.trim() || undefined;
       const maxParallel = parseInteger(mergedAttributes.max_parallel);
-      const llmModel = mergedAttributes.llm_model?.trim() || mergedAttributes['llm.model']?.trim() || undefined;
+      const llmModel = mergedAttributes.llm_model?.trim()
+        || mergedAttributes['llm.model']?.trim()
+        || mergedAttributes.model?.trim()
+        || undefined;
       const llmProvider = mergedAttributes.llm_provider?.trim() || mergedAttributes['llm.provider']?.trim() || undefined;
       const reasoningEffort = mergedAttributes.reasoning_effort?.trim() || mergedAttributes['llm.reasoning_effort']?.trim() || undefined;
       const autoStatus = mergedAttributes.auto_status?.trim().toLowerCase() === 'true' ? true : undefined;
@@ -167,6 +170,10 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
       const legacyScript = mergedAttributes.script?.trim();
       const toolCommand = explicitToolCommand || legacyScript || undefined;
       const toolCommandFromScript = !explicitToolCommand && Boolean(legacyScript);
+      const assertExistsRaw = mergedAttributes.assert_exists?.trim();
+      const assertExists = assertExistsRaw
+        ? assertExistsRaw.split(',').map((segment) => segment.trim()).filter(Boolean)
+        : undefined;
       const managerPollIntervalMs = parseTimeoutMs(mergedAttributes['manager.poll_interval']);
       const managerMaxCycles = parseInteger(mergedAttributes['manager.max_cycles']);
       const managerStopCondition = mergedAttributes['manager.stop_condition']?.trim() || undefined;
@@ -216,6 +223,7 @@ export function parseGardenSource(source: string, dotPath = '<memory>'): GardenG
         threadId,
         toolCommand,
         toolCommandFromScript,
+        assertExists,
         managerPollIntervalMs,
         managerMaxCycles,
         managerStopCondition,

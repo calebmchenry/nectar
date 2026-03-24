@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { evaluateConditionAst, parseConditionAst } from '../engine/conditions.js';
 import { collectVariableReferences, ConditionExpr } from '../engine/condition-parser.js';
 import { getRetryPreset, listRetryPresetNames } from '../engine/retry.js';
@@ -11,6 +12,13 @@ import {
 } from './types.js';
 import { parseStylesheet } from './stylesheet.js';
 import { parseTimeoutMs } from './parse.js';
+import {
+  detectPortabilityRisks,
+  extractToolCommandHead,
+  isExecutableOnPath,
+  isPathLikeCommandHead,
+  isShellBuiltin,
+} from './tool-command-lint.js';
 
 const EMPTY_ARTIFACT_SCOPE = {
   has: (_key: string) => false,
@@ -105,11 +113,37 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
     validateNodeRetries(graph, node, diagnostics);
     validateNodeRetryPolicy(graph, node, diagnostics);
 
+    const explicitToolCommand = node.attributes.tool_command?.trim();
+    const script = node.attributes.script?.trim();
+    const effectiveToolCommand = node.toolCommand ?? explicitToolCommand ?? script;
+    const hasShapeMismatchToolCommand = node.kind === 'codergen' && Boolean(effectiveToolCommand);
+
+    if (hasShapeMismatchToolCommand) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'SHAPE_MISMATCH_TOOL_COMMAND',
+        message: `Node '${node.id}' has tool_command but box shape — did you mean shape=parallelogram?`,
+        file: nodeFile,
+        location: node.location,
+        node_id: node.id,
+        fix: 'Change shape to parallelogram, or remove tool_command and use prompt instead.',
+      });
+    }
+
+    if (script) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'SCRIPT_DEPRECATED',
+        message: `The 'script' attribute is deprecated. Use 'tool_command' instead.`,
+        file: nodeFile,
+        location: node.location,
+        node_id: node.id,
+        fix: `Replace script=... with tool_command=... on node '${node.id}'.`,
+      });
+    }
+
     if (node.kind === 'tool') {
-      const explicitToolCommand = node.attributes.tool_command?.trim();
-      const script = node.attributes.script?.trim();
-      const toolCommand = node.toolCommand ?? explicitToolCommand;
-      if (!toolCommand && !script) {
+      if (!effectiveToolCommand) {
         diagnostics.push({
           severity: 'error',
           code: 'TOOL_SCRIPT_REQUIRED',
@@ -119,15 +153,73 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
           node_id: node.id,
           fix: `Set ${node.id} [tool_command="echo hello"] (or add legacy script).`,
         });
-      } else if ((node.toolCommandFromScript || !explicitToolCommand) && script) {
+      } else {
         diagnostics.push({
           severity: 'info',
-          code: 'TOOL_SCRIPT_DEPRECATED',
-          message: `Tool node '${node.id}' uses deprecated script attribute. Prefer tool_command.`,
+          code: 'SHELL_ALIAS_INFO',
+          message: 'Note: tool_command runs in a non-interactive shell. Shell aliases are not available. Use full command paths and flags.',
           file: nodeFile,
           location: node.location,
           node_id: node.id,
-          fix: `Replace script=... with tool_command=... on node '${node.id}'.`,
+        });
+
+        const head = extractToolCommandHead(effectiveToolCommand);
+        if (
+          head
+          && !isPathLikeCommandHead(head)
+          && !isShellBuiltin(head)
+          && !isExecutableOnPath(head)
+        ) {
+          diagnostics.push({
+            severity: 'info',
+            code: 'TOOL_COMMAND_NOT_FOUND',
+            message: `tool_command executable '${head}' not found on PATH.`,
+            file: nodeFile,
+            location: node.location,
+            node_id: node.id,
+          });
+        }
+
+        const portabilityRisks = detectPortabilityRisks(effectiveToolCommand);
+        if (portabilityRisks.length > 0) {
+          diagnostics.push({
+            severity: 'info',
+            code: 'TOOL_COMMAND_PORTABILITY',
+            message: `tool_command in node '${node.id}' may use GNU-specific flags. These may not work on macOS/BSD.`,
+            file: nodeFile,
+            location: node.location,
+            node_id: node.id,
+            fix: `Review flags: ${portabilityRisks.join(', ')}.`,
+          });
+        }
+      }
+    }
+
+    const assertExistsRaw = node.attributes.assert_exists;
+    if (assertExistsRaw !== undefined) {
+      const parsed = parseAssertExists(assertExistsRaw);
+      if (parsed.hasEmptySegments || parsed.paths.length === 0) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'ASSERT_EXISTS_INVALID',
+          message: `Node '${node.id}' has invalid assert_exists syntax. Provide a comma-separated list of non-empty paths.`,
+          file: nodeFile,
+          location: node.location,
+          node_id: node.id,
+          fix: `Set assert_exists="path/to/file.ext" (or a comma-separated list).`,
+        });
+      }
+
+      const escaping = parsed.paths.filter((entry) => pathEscapesWorkspace(entry));
+      if (escaping.length > 0) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'ASSERT_EXISTS_PATH_ESCAPE',
+          message: `Node '${node.id}' has assert_exists path(s) that escape workspace boundaries: ${escaping.join(', ')}.`,
+          file: nodeFile,
+          location: node.location,
+          node_id: node.id,
+          fix: `Use workspace-relative assert_exists paths without '..' traversal.`,
         });
       }
     }
@@ -303,8 +395,19 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
       }
     }
 
+    if (node.kind === 'conditional' && (node.prompt?.trim() || node.attributes.prompt?.trim())) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'PROMPT_UNSUPPORTED_FOR_CONDITIONAL',
+        message: `Conditional node '${node.id}' does not support the prompt attribute. Diamond nodes are edge routers — use edge conditions for routing, or change to shape=box for LLM evaluation.`,
+        file: nodeFile,
+        location: node.location,
+        node_id: node.id,
+      });
+    }
+
     // prompt_on_llm_nodes: box nodes should have prompt attribute
-    if (node.kind === 'codergen' && !node.prompt && !node.attributes.prompt) {
+    if (node.kind === 'codergen' && !hasShapeMismatchToolCommand && !node.prompt && !node.attributes.prompt) {
       diagnostics.push({
         severity: 'warning',
         code: 'PROMPT_MISSING',
@@ -312,7 +415,7 @@ export function validateGarden(graph: GardenGraph): Diagnostic[] {
         file: nodeFile,
         location: node.location,
         node_id: node.id,
-        fix: `Set ${node.id} [prompt="..."] with the task instruction.`,
+        fix: `Set ${node.id} [prompt="..."] for LLM execution, or change shape to parallelogram for tool_command execution.`,
       });
     }
 
@@ -878,6 +981,31 @@ function canReachNode(graph: GardenGraph, fromId: string, toId: string): boolean
   }
 
   return false;
+}
+
+function parseAssertExists(value: string): { paths: string[]; hasEmptySegments: boolean } {
+  const segments = value.split(',');
+  const paths: string[] = [];
+  let hasEmptySegments = false;
+
+  for (const segment of segments) {
+    const trimmed = segment.trim();
+    if (!trimmed) {
+      hasEmptySegments = true;
+      continue;
+    }
+    paths.push(trimmed);
+  }
+
+  return { paths, hasEmptySegments };
+}
+
+function pathEscapesWorkspace(assertPath: string): boolean {
+  const normalized = path.normalize(assertPath);
+  if (normalized === '..' || normalized.startsWith(`..${path.sep}`)) {
+    return true;
+  }
+  return normalized.split(/[\\/]+/).includes('..');
 }
 
 function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {

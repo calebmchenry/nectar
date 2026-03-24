@@ -40,10 +40,28 @@ describe('garden parse', () => {
     expect(impl?.llmModel).toBe('claude-opus-4-20250514');
   });
 
+  it('parses model as alias for llm_model', () => {
+    const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nimpl [shape=box, prompt="Do", model="claude-opus-4-6"]\nend [shape=Msquare]\nstart -> impl -> end }`);
+    const impl = graph.nodeMap.get('impl');
+    expect(impl?.llmModel).toBe('claude-opus-4-6');
+  });
+
+  it('prefers llm_model over model when both are set', () => {
+    const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nimpl [shape=box, prompt="Do", llm_model="primary", model="fallback"]\nend [shape=Msquare]\nstart -> impl -> end }`);
+    const impl = graph.nodeMap.get('impl');
+    expect(impl?.llmModel).toBe('primary');
+  });
+
   it('parses llm_provider attribute', () => {
     const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nimpl [shape=box, prompt="Do", llm_provider="openai"]\nend [shape=Msquare]\nstart -> impl -> end }`);
     const impl = graph.nodeMap.get('impl');
     expect(impl?.llmProvider).toBe('openai');
+  });
+
+  it('parses assert_exists as a comma-separated list', () => {
+    const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nimpl [shape=parallelogram, tool_command="echo hi", assert_exists="docs/a.md, docs/b.md"]\nend [shape=Msquare]\nstart -> impl -> end }`);
+    const impl = graph.nodeMap.get('impl');
+    expect(impl?.assertExists).toEqual(['docs/a.md', 'docs/b.md']);
   });
 
   it('parses node retry_policy attribute', () => {

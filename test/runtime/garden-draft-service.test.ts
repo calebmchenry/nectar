@@ -62,5 +62,8 @@ describe('GardenDraftService', () => {
 
     expect(events.some((event) => event.type === 'draft_complete')).toBe(true);
     expect(events.some((event) => event.type === 'draft_start')).toBe(true);
+    const complete = events.find((event): event is Extract<GardenDraftEvent, { type: 'draft_complete' }> => event.type === 'draft_complete');
+    expect(complete?.dot_source).toContain('tool_command=');
+    expect(complete?.dot_source).not.toContain('script=');
   });
 });

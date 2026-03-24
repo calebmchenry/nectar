@@ -278,7 +278,7 @@ export class PipelineService {
       : (load.source_hash ?? '');
     if (!options.force && nextHash !== cocoon.graph_hash) {
       throw new PipelineConflictError(
-        `Graph hash mismatch for run '${options.run_id}'. Original ${cocoon.graph_hash}, current ${nextHash}. Re-run with --force to override.`
+        `Graph hash mismatch for run '${resolvedRunId}'. The garden file has been modified since this run started.\n\nTo resume anyway, run:\n  nectar resume ${resolvedRunId} --force`
       );
     }
 

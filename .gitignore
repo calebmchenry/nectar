@@ -4,3 +4,4 @@ dist/
 .nectar/cocoons/
 *.log
 src/generated/
+notes/

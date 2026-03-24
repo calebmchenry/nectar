@@ -62,6 +62,15 @@ export class EventRenderer {
           } else {
             this.write(message);
           }
+
+          const hasExplicitFailureDetail = Boolean(
+            (event.outcome.error_message && event.outcome.error_message.trim().length > 0)
+            || (event.outcome.stderr && event.outcome.stderr.trim().length > 0)
+          );
+          const notes = event.outcome.notes?.trim();
+          if (!hasExplicitFailureDetail && notes) {
+            this.write(this.theme.muted(`    ${truncateForCli(notes, 500)}`));
+          }
         }
 
         if (spinner) {
@@ -264,4 +273,11 @@ export class EventRenderer {
       }
     }
   }
+}
+
+function truncateForCli(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}...`;
 }

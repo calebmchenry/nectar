@@ -1686,6 +1686,46 @@ export async function executeNodeSequence(options: SequenceOptions): Promise<Seq
       });
     }
 
+    if (outcome.status === 'failure') {
+      const failureResolution = resolveFailureTarget({
+        node,
+        graph,
+        context: context.snapshot(),
+        steps: stepResultsToConditionState(stepResults),
+        artifacts: {
+          has: (_key: string) => false,
+          get: (_key: string) => undefined,
+        },
+      });
+
+      if (failureResolution.error) {
+        return {
+          completedNodes,
+          lastOutcome: outcome,
+          error: failureResolution.error,
+        };
+      }
+
+      if (failureResolution.target) {
+        if (failureResolution.edge) {
+          emit({
+            type: 'edge_selected',
+            run_id: runId,
+            node_id: node.id,
+            edge: failureResolution.edge,
+          });
+        }
+        currentNodeId = failureResolution.target;
+        continue;
+      }
+
+      return {
+        completedNodes,
+        lastOutcome: outcome,
+        stoppedAtNodeId: node.id,
+      };
+    }
+
     const outgoing = graph.outgoing.get(node.id) ?? [];
     if (outgoing.length === 0) {
       // Dead end

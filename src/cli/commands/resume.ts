@@ -60,11 +60,13 @@ export function registerResumeCommand(program: Command): void {
           for (const diagnostic of error.diagnostics) {
             process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
           }
-        } else if (
-          error instanceof PipelineNotFoundError ||
-          error instanceof PipelineConflictError
-        ) {
+        } else if (error instanceof PipelineNotFoundError) {
           process.stderr.write(`${error.message}\n`);
+        } else if (error instanceof PipelineConflictError) {
+          process.stderr.write(`${error.message}\n`);
+          if (error.message.includes('Graph hash mismatch')) {
+            process.stderr.write(`\nTo resume anyway, run:\n  nectar resume ${runId} --force\n`);
+          }
         } else {
           throw error;
         }

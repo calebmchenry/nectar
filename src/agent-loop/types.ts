@@ -15,6 +15,7 @@ export interface SessionConfig {
   enable_loop_detection?: boolean;
   loop_detection_window?: number;
   max_follow_ups?: number;
+  require_tool_calls_for_success?: boolean;
 }
 
 export const DEFAULT_SESSION_CONFIG: Omit<SessionConfig, 'workspace_root'> = {
@@ -27,6 +28,7 @@ export const DEFAULT_SESSION_CONFIG: Omit<SessionConfig, 'workspace_root'> = {
   enable_loop_detection: true,
   loop_detection_window: 10,
   max_follow_ups: 10,
+  require_tool_calls_for_success: false,
 };
 
 /**

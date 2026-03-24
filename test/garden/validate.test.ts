@@ -60,24 +60,24 @@ describe('garden validate', () => {
   it('warns when only legacy script is provided', () => {
     const graph = parseGardenSource(`digraph G { start [shape=Mdiamond]\nmid [shape=parallelogram, script="echo hi"]\nend [shape=Msquare]\nstart -> mid\nmid -> end }`);
     const diags = validateGarden(graph);
-    expect(diags.some((diag) => diag.code === 'TOOL_SCRIPT_DEPRECATED')).toBe(true);
+    expect(diags.some((diag) => diag.code === 'SCRIPT_DEPRECATED')).toBe(true);
   });
 
-  it('emits INFO severity for deprecated tool script usage', () => {
+  it('emits warning severity for deprecated script usage', () => {
     const graph = parseGardenSource(`digraph G {
       start [shape=Mdiamond]
       mid [shape=parallelogram, script="echo hi"]
       end [shape=Msquare]
       start -> mid -> end
     }`);
-    const diag = validateGarden(graph).find((item) => item.code === 'TOOL_SCRIPT_DEPRECATED');
+    const diag = validateGarden(graph).find((item) => item.code === 'SCRIPT_DEPRECATED');
     expect(diag).toBeTruthy();
-    expect(diag?.severity).toBe('info');
+    expect(diag?.severity).toBe('warning');
     expect(diag?.node_id).toBe('mid');
     expect(diag?.fix).toContain('tool_command');
   });
 
-  it('does not treat INFO diagnostics as validation errors', () => {
+  it('does not treat warning diagnostics as validation errors', () => {
     const graph = parseGardenSource(`digraph G {
       start [shape=Mdiamond]
       mid [shape=parallelogram, script="echo hi"]
@@ -85,8 +85,97 @@ describe('garden validate', () => {
       start -> mid -> end
     }`);
     const diags = validateGarden(graph);
-    expect(diags.some((diag) => diag.code === 'TOOL_SCRIPT_DEPRECATED' && diag.severity === 'info')).toBe(true);
+    expect(diags.some((diag) => diag.code === 'SCRIPT_DEPRECATED' && diag.severity === 'warning')).toBe(true);
     expect(diags.some((diag) => diag.severity === 'error')).toBe(false);
+  });
+
+  it('warns when box node defines tool_command and suppresses PROMPT_MISSING', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=box, tool_command="echo hi"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'SHAPE_MISMATCH_TOOL_COMMAND')).toBe(true);
+    expect(diags.some((diag) => diag.code === 'PROMPT_MISSING' && diag.node_id === 'mid')).toBe(false);
+  });
+
+  it('errors when conditional node defines prompt', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      gate [shape=diamond, prompt="Should we continue?"]
+      end [shape=Msquare]
+      start -> gate -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'PROMPT_UNSUPPORTED_FOR_CONDITIONAL')).toBe(true);
+  });
+
+  it('emits shell alias info for tool nodes', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, tool_command="echo hi"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'SHELL_ALIAS_INFO')).toBe(true);
+  });
+
+  it('warns when tool_command executable is not on PATH', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, tool_command="__missing_executable_abc123 --version"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'TOOL_COMMAND_NOT_FOUND')).toBe(true);
+  });
+
+  it('does not warn for PATH check when tool command is shell builtin', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, tool_command="echo hi"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'TOOL_COMMAND_NOT_FOUND')).toBe(false);
+  });
+
+  it('warns on GNU portability flags in tool_command', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, tool_command="grep -oP 'foo' file.txt"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'TOOL_COMMAND_PORTABILITY')).toBe(true);
+  });
+
+  it('errors on empty assert_exists segments', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, tool_command="echo hi", assert_exists="docs/a.md, , docs/b.md"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'ASSERT_EXISTS_INVALID')).toBe(true);
+  });
+
+  it('errors when assert_exists path escapes workspace via traversal', () => {
+    const graph = parseGardenSource(`digraph G {
+      start [shape=Mdiamond]
+      mid [shape=parallelogram, tool_command="echo hi", assert_exists="../outside.txt"]
+      end [shape=Msquare]
+      start -> mid -> end
+    }`);
+    const diags = validateGarden(graph);
+    expect(diags.some((diag) => diag.code === 'ASSERT_EXISTS_PATH_ESCAPE')).toBe(true);
   });
 
   it('populates node_id for multiple node-specific validation rules', () => {

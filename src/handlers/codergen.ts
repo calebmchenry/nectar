@@ -101,6 +101,8 @@ export class CodergenHandler implements NodeHandler {
     const enableLoopDetection = input.node.attributes['agent.enable_loop_detection']
       ? input.node.attributes['agent.enable_loop_detection'] === 'true'
       : DEFAULT_SESSION_CONFIG.enable_loop_detection;
+    const requireToolCallsForSuccess = parseOptionalBoolean(input.node.attributes['agent.require_tool_calls'])
+      ?? promptExpectsToolWork(prompt);
 
     const workspaceRoot = input.workspace_root ?? process.cwd();
 
@@ -127,17 +129,23 @@ export class CodergenHandler implements NodeHandler {
 
       // Select provider profile (never mutate the shared singleton)
       const profile = selectProfile(provider);
+      let sessionProvider = provider ?? profile.name;
+      let sessionModel = model ?? profile.defaultModel ?? 'default';
 
       // Create transcript writer
       const transcriptWriter = new TranscriptWriter(nodeDir);
 
       // Bridge agent events to engine events
       const emitEvent = input.emitEvent;
-      const onAgentEvent = emitEvent
-        ? (event: AgentEvent) => {
+      const onAgentEvent = (event: AgentEvent) => {
+          if (event.type === 'agent_session_started') {
+            sessionProvider = event.provider;
+            sessionModel = event.model;
+          }
+          if (emitEvent) {
             bridgeAgentEvent(event, input.run_id, input.node.id, emitEvent);
           }
-        : undefined;
+        };
 
       // Resolve tool hooks (node-level overrides graph-level)
       const hooks = resolveHooks(
@@ -158,6 +166,7 @@ export class CodergenHandler implements NodeHandler {
         tool_line_limits: DEFAULT_SESSION_CONFIG.tool_line_limits,
         enable_loop_detection: enableLoopDetection,
         loop_detection_window: loopDetectionWindow,
+        require_tool_calls_for_success: requireToolCallsForSuccess,
       }, {
         onEvent: onAgentEvent,
         transcriptWriter,
@@ -189,13 +198,14 @@ export class CodergenHandler implements NodeHandler {
 
       // Run session
       const result = await session.processInput(expandedPrompt);
+      const responseText = result.final_text.trim();
 
       // Write artifacts
       await transcriptWriter.writeResponse(result.final_text);
       await transcriptWriter.writeStatus({
         ...result,
-        provider: profile.name,
-        model: profile.defaultModel ?? 'default',
+        provider: sessionProvider,
+        model: sessionModel,
         agent_duration_ms: Date.now(),
       });
 
@@ -210,11 +220,21 @@ export class CodergenHandler implements NodeHandler {
 
       if (result.status === 'failure') {
         const inferredCategory = classifyCodergenError(result.error_message);
+        const isNoToolCallFailure = result.stop_reason === 'no_tool_calls' || result.tool_call_count === 0;
+        const noteParts = [result.error_message ?? 'Agent session failed.'];
+        if (responseText.length > 0) {
+          noteParts.push(`Response: ${truncateForContext(responseText, 1000)}`);
+        }
         return {
-          status: inferredCategory ? 'failure' : 'retry',
-          notes: result.error_message ?? 'Agent session failed.',
+          status: inferredCategory || isNoToolCallFailure ? 'failure' : 'retry',
+          notes: noteParts.join('\n'),
           error_message: result.error_message ?? 'Agent session failed',
           error_category: inferredCategory,
+          context_updates: responseText.length > 0 ? {
+            last_stage: input.node.id,
+            last_response: truncateForContext(responseText, 200),
+            [`${input.node.id}.response`]: truncateForContext(responseText, 500),
+          } : undefined,
         };
       }
 
@@ -324,6 +344,39 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
     return fallback;
   }
   return parsed;
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') {
+    return true;
+  }
+  if (normalized === 'false') {
+    return false;
+  }
+  return undefined;
+}
+
+function promptExpectsToolWork(prompt: string): boolean {
+  const normalizedPrompt = prompt.trim();
+  if (normalizedPrompt.length === 0) {
+    return false;
+  }
+
+  // Paths usually imply concrete filesystem work, not text-only generation.
+  const hasPathLikeToken = /(?:^|[\s"'`])(?!https?:\/\/)[./~]?[\w-]+(?:\/[\w.-]+)+/.test(normalizedPrompt);
+  if (hasPathLikeToken) {
+    return true;
+  }
+
+  const hasActionVerb = /\b(read|write|edit|update|modify|create|delete|run|execute|search|grep|glob|list)\b/i
+    .test(normalizedPrompt);
+  const hasExecutionTarget = /\b(file|files|directory|repo|repository|code|command|shell|test|build|workspace)\b/i
+    .test(normalizedPrompt);
+  return hasActionVerb && hasExecutionTarget;
 }
 
 function classifyCodergenError(error: unknown): NodeOutcome['error_category'] {

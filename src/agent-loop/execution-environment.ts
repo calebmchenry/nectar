@@ -3,8 +3,8 @@ import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import ignore from 'ignore';
-import { execaCommand } from 'execa';
 import { runGlobSearch, runGrepSearch } from './search.js';
+import { execCommand } from '../process/exec-command.js';
 
 export interface ExecResult {
   stdout: string;
@@ -216,92 +216,21 @@ export class LocalExecutionEnvironment implements ExecutionEnvironment {
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
     const timeoutMs = options?.timeout_ms ?? 120_000;
     const filteredEnv = filterEnv(process.env);
-    const startedMs = Date.now();
-    const supportsProcessGroups = process.platform === 'darwin' || process.platform === 'linux';
-    const subprocess = execaCommand(command, {
+    const result = await execCommand({
+      command,
       cwd: this.cwd,
       env: filteredEnv,
-      extendEnv: false,
+      timeout_ms: timeoutMs,
+      abort_signal: options?.abort_signal,
       shell: true,
-      reject: false,
-      detached: supportsProcessGroups,
-      timeout: undefined,
-      cancelSignal: undefined,
-      windowsHide: true,
     });
 
-    let timedOut = false;
-    let cancelled = false;
-    let completed = false;
-    let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const terminateTree = (reason: 'timeout' | 'abort') => {
-      if (completed) {
-        return;
-      }
-      if (reason === 'timeout') {
-        timedOut = true;
-      } else {
-        cancelled = true;
-      }
-
-      const pid = typeof subprocess.pid === 'number' ? subprocess.pid : undefined;
-      if (supportsProcessGroups && pid && pid > 0) {
-        safeKillProcessGroup(pid, 'SIGTERM');
-        hardKillTimer = setTimeout(() => {
-          safeKillProcessGroup(pid, 'SIGKILL');
-        }, 2000);
-        hardKillTimer.unref?.();
-        return;
-      }
-
-      safeKillProcess(subprocess, 'SIGTERM');
-      hardKillTimer = setTimeout(() => {
-        safeKillProcess(subprocess, 'SIGKILL');
-      }, 2000);
-      hardKillTimer.unref?.();
-    };
-
-    const timeoutTimer = setTimeout(() => {
-      terminateTree('timeout');
-    }, timeoutMs);
-    timeoutTimer.unref?.();
-
-    const onAbort = () => {
-      terminateTree('abort');
-    };
-    if (options?.abort_signal?.aborted) {
-      onAbort();
-    } else {
-      options?.abort_signal?.addEventListener('abort', onAbort, { once: true });
-    }
-
-    let settled: unknown;
-    try {
-      settled = await subprocess;
-    } catch (error) {
-      settled = error;
-    } finally {
-      completed = true;
-      clearTimeout(timeoutTimer);
-      if (hardKillTimer) {
-        clearTimeout(hardKillTimer);
-      }
-      options?.abort_signal?.removeEventListener('abort', onAbort);
-    }
-
-    const stdout = String((settled as { stdout?: unknown })?.stdout ?? '');
-    let stderr = String((settled as { stderr?: unknown })?.stderr ?? '');
-    if (cancelled && !timedOut && stderr.trim().length === 0) {
-      stderr = 'Command cancelled';
-    }
-
     return {
-      stdout,
-      stderr,
-      exitCode: timedOut ? 124 : cancelled ? 130 : resolveExitCode(settled),
-      timed_out: timedOut,
-      duration_ms: Math.max(0, Date.now() - startedMs),
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: typeof result.exit_code === 'number' ? result.exit_code : 1,
+      timed_out: result.timed_out,
+      duration_ms: result.duration_ms,
     };
   }
 
@@ -377,26 +306,3 @@ async function walkDirectory(input: {
 }
 
 export { filterEnv as _filterEnvForTest };
-
-function resolveExitCode(result: unknown): number {
-  if (result && typeof result === 'object' && 'exitCode' in result && typeof (result as { exitCode?: unknown }).exitCode === 'number') {
-    return (result as { exitCode: number }).exitCode;
-  }
-  return 1;
-}
-
-function safeKillProcessGroup(pid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    // best-effort group kill
-  }
-}
-
-function safeKillProcess(subprocess: { kill: (signal?: NodeJS.Signals | number) => boolean }, signal: NodeJS.Signals): void {
-  try {
-    subprocess.kill(signal);
-  } catch {
-    // best-effort process kill
-  }
-}

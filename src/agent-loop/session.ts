@@ -109,6 +109,8 @@ export class AgentSession {
       },
       enable_loop_detection: config.enable_loop_detection ?? DEFAULT_SESSION_CONFIG.enable_loop_detection,
       loop_detection_window: config.loop_detection_window ?? DEFAULT_SESSION_CONFIG.loop_detection_window,
+      require_tool_calls_for_success: config.require_tool_calls_for_success
+        ?? DEFAULT_SESSION_CONFIG.require_tool_calls_for_success,
     };
 
     this.client = client;
@@ -326,6 +328,7 @@ export class AgentSession {
               enable_loop_detection: this.config.enable_loop_detection,
               loop_detection_window: this.config.loop_detection_window,
               max_follow_ups: this.config.max_follow_ups,
+              require_tool_calls_for_success: this.config.require_tool_calls_for_success,
             },
             {
               onEvent: this.onEvent,
@@ -684,6 +687,18 @@ export class AgentSession {
         // Auto-close live children on completion
         if (this.subagentManager) {
           await this.subagentManager.closeAll(this.childSessions);
+        }
+        if (this.config.require_tool_calls_for_success && toolCallCount === 0) {
+          return this.buildResult(
+            'failure',
+            lastText,
+            aggregatedUsage,
+            turnCount,
+            toolCallCount,
+            'no_tool_calls',
+            'Agent produced no tool calls',
+            startTime,
+          );
         }
         return this.buildResult('success', lastText, aggregatedUsage, turnCount, toolCallCount, stopReason, undefined, startTime);
       }
