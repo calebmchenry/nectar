@@ -7,7 +7,6 @@ export const readFileSchema = {
     offset: { type: 'integer', minimum: 1, description: 'Line number to start reading from' },
     limit: { type: 'integer', minimum: 1, description: 'Number of lines to read' },
   },
-  required: ['file_path'],
   additionalProperties: false,
 };
 
