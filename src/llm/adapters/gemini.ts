@@ -132,6 +132,12 @@ interface GeminiContent {
   parts: GeminiPart[];
 }
 
+function stripGeminiUnsupported(schema: Record<string, unknown>): Record<string, unknown> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { additionalProperties, $schema, ...rest } = schema;
+  return rest;
+}
+
 function translateRequest(request: GenerateRequest): {
   contents: GeminiContent[];
   systemInstruction?: { parts: GeminiPart[] };
@@ -307,7 +313,7 @@ function translateRequest(request: GenerateRequest): {
       function_declarations: request.tools.map((t) => ({
         name: t.name,
         description: t.description,
-        parameters: t.input_schema
+        parameters: stripGeminiUnsupported(t.input_schema)
       }))
     }];
   }
